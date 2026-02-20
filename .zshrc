@@ -41,18 +41,17 @@ elif command -v brew >/dev/null 2>&1; then
   ZSH_Z_PATH="$(brew --prefix)/share/zsh-z/zsh-z.plugin.zsh"
   [[ -f "$ZSH_Z_PATH" ]] && source "$ZSH_Z_PATH"
 fi
+
 export JAVA_HOME=/Library/Java/JavaVirtualMachines/zulu-17.jdk/Contents/Home
 export ANDROID_HOME=$HOME/Library/Android/sdk
 export PATH=$PATH:$ANDROID_HOME/emulator
 export PATH=$PATH:$ANDROID_HOME/platform-tools
 
 
-# bun completions
-[ -s "/Users/andrewsmith/.bun/_bun" ] && source "/Users/andrewsmith/.bun/_bun"
-
 # bun
 export BUN_INSTALL="$HOME/.bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
+[ -s "$BUN_INSTALL/_bun" ] && source "$BUN_INSTALL/_bun"
 
 alias studio='open -a "Android Studio"'
 alias lg='lazygit'

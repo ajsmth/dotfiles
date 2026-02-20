@@ -12,6 +12,10 @@ has_cmd() {
   command -v "$1" >/dev/null 2>&1
 }
 
+has_bun() {
+  has_cmd bun || [[ -x "$HOME/.bun/bin/bun" ]]
+}
+
 run_privileged() {
   if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
     "$@"
@@ -86,11 +90,28 @@ install_nvm() {
   fi
 }
 
+install_bun() {
+  if has_bun; then
+    return
+  fi
+
+  if has_cmd curl; then
+    log 'Installing bun via official install script.'
+    curl -fsSL https://bun.sh/install | bash
+  else
+    log 'curl not found; skipping bun install.'
+  fi
+}
+
 verify_requirements() {
   local -a missing=()
 
   if ! has_cmd rbenv; then
     missing+=("rbenv")
+  fi
+
+  if ! has_bun; then
+    missing+=("bun")
   fi
 
   if [[ ! -s "$HOME/.nvm/nvm.sh" ]]; then
@@ -147,11 +168,13 @@ main() {
         brew install stow git tmux neovim pure nvm rbenv lazygit
       fi
       install_nvm
+      install_bun
       install_zsh_z
       ;;
     Linux)
       install_linux_packages
       install_nvm
+      install_bun
       install_zsh_z
       ;;
     *)

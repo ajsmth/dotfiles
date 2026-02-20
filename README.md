@@ -47,8 +47,9 @@ cd ~/dotfiles
 
 - `scripts/bootstrap.sh` supports `brew` on macOS and `apt`/`dnf`/`pacman` on Linux.
 - On macOS, bootstrap installs: `git`, `stow`, `tmux`, `neovim`, `pure`, `nvm`, `rbenv`, `lazygit`.
+- `bun` is installed via the official install script when missing.
 - `nvm` is installed from Homebrew when available; bootstrap falls back to `~/.nvm` git install if needed.
 - `zsh-z` is installed via git clone to `~/zsh-z` (used by `.zshrc`).
 - Android SDK/Java paths in `.zshrc` are user-specific and are not installed by bootstrap.
-- Bootstrap verifies required shell tooling (`rbenv`, `nvm`) and exits clearly if anything is still missing.
+- Bootstrap verifies required shell tooling (`rbenv`, `nvm`, `bun`) and exits clearly if anything is still missing.
 - Existing dotfiles in `$HOME` can conflict on first run; use `dry-run` and `adopt` as needed.
