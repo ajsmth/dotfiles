@@ -42,6 +42,18 @@ elif command -v brew >/dev/null 2>&1; then
   [[ -f "$ZSH_Z_PATH" ]] && source "$ZSH_Z_PATH"
 fi
 
+if command -v brew >/dev/null 2>&1; then
+  FZF_PREFIX="$(brew --prefix)/opt/fzf"
+  [[ -f "$FZF_PREFIX/shell/completion.zsh" ]] && source "$FZF_PREFIX/shell/completion.zsh"
+  [[ -f "$FZF_PREFIX/shell/key-bindings.zsh" ]] && source "$FZF_PREFIX/shell/key-bindings.zsh"
+fi
+
+[[ -f /usr/share/fzf/completion.zsh ]] && source /usr/share/fzf/completion.zsh
+[[ -f /usr/share/fzf/key-bindings.zsh ]] && source /usr/share/fzf/key-bindings.zsh
+if command -v zoxide >/dev/null 2>&1; then
+  eval "$(zoxide init zsh)"
+fi
+
 export JAVA_HOME=/Library/Java/JavaVirtualMachines/zulu-17.jdk/Contents/Home
 export ANDROID_HOME=$HOME/Library/Android/sdk
 export PATH=$PATH:$ANDROID_HOME/emulator
@@ -56,6 +68,9 @@ export PATH="$BUN_INSTALL/bin:$PATH"
 alias studio='open -a "Android Studio"'
 alias lg='lazygit'
 export PATH="$HOME/.local/bin:$PATH"
+
+alias y='yazi'
+alias f='yazi'
 
 export EDITOR="nvim"
 bindkey -v 

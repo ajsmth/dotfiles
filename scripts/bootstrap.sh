@@ -103,6 +103,17 @@ install_bun() {
   fi
 }
 
+install_fzf_shell_integration() {
+  if has_cmd brew; then
+    local fzf_install_script
+    fzf_install_script="$(brew --prefix)/opt/fzf/install"
+    if [[ -x "$fzf_install_script" ]]; then
+      "$fzf_install_script" --key-bindings --completion --no-update-rc >/dev/null 2>&1 || true
+      return
+    fi
+  fi
+}
+
 install_ghostty() {
   if has_cmd ghostty; then
     return
@@ -164,21 +175,19 @@ verify_requirements() {
 }
 
 install_linux_packages() {
-  local packages=(stow git curl)
-
   if has_cmd apt-get; then
     run_privileged apt-get update
-    run_privileged apt-get install -y "${packages[@]}"
+    run_privileged apt-get install -y stow git curl ripgrep fd-find fzf zoxide
     return
   fi
 
   if has_cmd dnf; then
-    run_privileged dnf install -y "${packages[@]}"
+    run_privileged dnf install -y stow git curl ripgrep fd-find fzf zoxide
     return
   fi
 
   if has_cmd pacman; then
-    run_privileged pacman -Syu --noconfirm "${packages[@]}"
+    run_privileged pacman -Syu --noconfirm stow git curl ripgrep fd fzf zoxide
     return
   fi
 
@@ -193,14 +202,15 @@ main() {
         log 'Installing packages from Brewfile.'
         if ! brew bundle --file "$DOTFILES_DIR/Brewfile"; then
           log 'brew bundle failed, falling back to minimum install.'
-          brew install stow git tmux neovim pure nvm rbenv lazygit
+          brew install stow git tmux neovim pure nvm rbenv lazygit ripgrep fd fzf zoxide yazi ffmpegthumbnailer sevenzip jq poppler
         fi
       else
         log 'Installing minimum packages via Homebrew.'
-        brew install stow git tmux neovim pure nvm rbenv lazygit
+        brew install stow git tmux neovim pure nvm rbenv lazygit ripgrep fd fzf zoxide yazi ffmpegthumbnailer sevenzip jq poppler
       fi
       install_nvm
       install_bun
+      install_fzf_shell_integration
       install_ghostty
       install_zsh_z
       ;;
@@ -208,6 +218,7 @@ main() {
       install_linux_packages
       install_nvm
       install_bun
+      install_fzf_shell_integration
       install_ghostty
       install_zsh_z
       ;;
