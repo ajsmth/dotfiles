@@ -37,6 +37,79 @@ ensure_homebrew() {
   fi
 }
 
+install_zsh_z() {
+  local target_dir="$HOME/zsh-z"
+  if [[ -f "$target_dir/zsh-z.plugin.zsh" ]]; then
+    return
+  fi
+
+  if has_cmd git; then
+    log 'Installing zsh-z plugin into ~/zsh-z.'
+    git clone https://github.com/agkozak/zsh-z.git "$target_dir"
+  else
+    log 'git not found; skipping zsh-z install.'
+  fi
+}
+
+install_nvm() {
+  local nvm_dir="$HOME/.nvm"
+  if [[ -s "$nvm_dir/nvm.sh" ]]; then
+    return
+  fi
+
+  if has_cmd brew; then
+    # Homebrew installs nvm under its prefix; .zshrc handles sourcing it.
+    if [[ -s "$(brew --prefix nvm 2>/dev/null)/nvm.sh" ]]; then
+      return
+    fi
+  fi
+
+  if has_cmd git; then
+    log 'Installing nvm into ~/.nvm.'
+    if [[ -d "$nvm_dir/.git" ]]; then
+      (
+        cd "$nvm_dir"
+        git fetch --tags
+        git checkout "$(git describe --abbrev=0 --tags)"
+      )
+    elif [[ -e "$nvm_dir" ]]; then
+      log "~/.nvm exists but is not an nvm git checkout; skipping auto-install."
+    else
+      git clone https://github.com/nvm-sh/nvm.git "$nvm_dir"
+      (
+        cd "$nvm_dir"
+        git checkout "$(git describe --abbrev=0 --tags)"
+      )
+    fi
+  else
+    log 'git not found; skipping nvm install.'
+  fi
+}
+
+verify_requirements() {
+  local -a missing=()
+
+  if ! has_cmd rbenv; then
+    missing+=("rbenv")
+  fi
+
+  if [[ ! -s "$HOME/.nvm/nvm.sh" ]]; then
+    if has_cmd brew; then
+      if [[ ! -s "$(brew --prefix nvm 2>/dev/null)/nvm.sh" ]]; then
+        missing+=("nvm")
+      fi
+    else
+      missing+=("nvm")
+    fi
+  fi
+
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    log "Missing required tooling after bootstrap: ${missing[*]}"
+    log 'Please install the missing tools, then rerun scripts/setup.sh.'
+    exit 1
+  fi
+}
+
 install_linux_packages() {
   local packages=(stow git curl)
 
@@ -67,21 +140,27 @@ main() {
         log 'Installing packages from Brewfile.'
         if ! brew bundle --file "$DOTFILES_DIR/Brewfile"; then
           log 'brew bundle failed, falling back to minimum install.'
-          brew install stow git tmux neovim
+          brew install stow git tmux neovim pure nvm rbenv lazygit
         fi
       else
         log 'Installing minimum packages via Homebrew.'
-        brew install stow git tmux neovim
+        brew install stow git tmux neovim pure nvm rbenv lazygit
       fi
+      install_nvm
+      install_zsh_z
       ;;
     Linux)
       install_linux_packages
+      install_nvm
+      install_zsh_z
       ;;
     *)
       log "Unsupported OS: $OS"
       exit 1
       ;;
   esac
+
+  verify_requirements
 
   log 'Bootstrap complete.'
 }
