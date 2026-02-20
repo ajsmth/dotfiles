@@ -1,4 +1,3 @@
--- smart-enter plugin config
--- By default open_multi is false (open hovered item only)
--- Uncomment to open multiple selected files:
--- require("smart-enter"):setup({ open_multi = true })
+require("smart-enter"):setup({
+  open_multi = false,
+})
