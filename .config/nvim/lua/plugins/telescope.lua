@@ -62,9 +62,15 @@ return {
       pickers = {
         find_files = {
           hidden = true,
-          no_ignore = true,
-          -- keep .git hidden
-          find_command = { 'rg', '--files', '--hidden', '--glob', '!.git' },
+          find_command = {
+            'rg',
+            '--files',
+            '--hidden',
+            '--glob',
+            '!**/.git/*',
+            '--glob',
+            '!node_modules/**',
+          },
         },
       },
       extensions = {
