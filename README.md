@@ -57,9 +57,10 @@ Install targets:
 ## Notes
 
 - `scripts/bootstrap.sh` supports `brew` on macOS and `apt`/`dnf`/`pacman` on Linux.
-- On macOS, bootstrap installs: `git`, `stow`, `tmux`, `neovim`, `pure`, `nvm`, `rbenv`, `lazygit`.
+- On macOS, bootstrap installs: `git`, `stow`, `tmux`, `neovim`, `pure`, `nvm`, `rbenv`, `lazygit`, `ghostty`.
 - `bun` is installed via the official install script when missing.
 - `nvm` is installed from Homebrew when available; bootstrap falls back to `~/.nvm` git install if needed.
+- On Linux, Ghostty install is attempted via distro package manager (`pacman`/`apk`/`zypper`/`snap`) when available.
 - `zsh-z` is installed via git clone to `~/zsh-z` (used by `.zshrc`).
 - Android SDK/Java paths in `.zshrc` are user-specific and are not installed by bootstrap.
 - Bootstrap verifies required shell tooling (`rbenv`, `nvm`, `bun`) and exits clearly if anything is still missing.

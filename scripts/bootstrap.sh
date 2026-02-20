@@ -103,6 +103,38 @@ install_bun() {
   fi
 }
 
+install_ghostty() {
+  if has_cmd ghostty; then
+    return
+  fi
+
+  case "$OS" in
+    Darwin)
+      if has_cmd brew; then
+        log 'Installing Ghostty via Homebrew cask.'
+        brew install --cask ghostty || log 'Ghostty install failed; continuing.'
+      fi
+      ;;
+    Linux)
+      if has_cmd pacman; then
+        log 'Installing Ghostty via pacman.'
+        run_privileged pacman -S --noconfirm ghostty || log 'Ghostty install failed; continuing.'
+      elif has_cmd apk; then
+        log 'Installing Ghostty via apk.'
+        run_privileged apk add ghostty || log 'Ghostty install failed; continuing.'
+      elif has_cmd zypper; then
+        log 'Installing Ghostty via zypper.'
+        run_privileged zypper --non-interactive install ghostty || log 'Ghostty install failed; continuing.'
+      elif has_cmd snap; then
+        log 'Installing Ghostty via snap.'
+        run_privileged snap install ghostty --classic || log 'Ghostty install failed; continuing.'
+      else
+        log 'No supported Ghostty package manager found; install manually from ghostty.org docs.'
+      fi
+      ;;
+  esac
+}
+
 verify_requirements() {
   local -a missing=()
 
@@ -169,12 +201,14 @@ main() {
       fi
       install_nvm
       install_bun
+      install_ghostty
       install_zsh_z
       ;;
     Linux)
       install_linux_packages
       install_nvm
       install_bun
+      install_ghostty
       install_zsh_z
       ;;
     *)
