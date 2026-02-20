@@ -59,7 +59,14 @@ return {
           shorten = 4,
         },
       },
-      -- pickers = {}
+      pickers = {
+        find_files = {
+          hidden = true,
+          no_ignore = true,
+          -- keep .git hidden
+          find_command = { 'rg', '--files', '--hidden', '--glob', '!.git' },
+        },
+      },
       extensions = {
         ['ui-select'] = {
           require('telescope.themes').get_dropdown(),

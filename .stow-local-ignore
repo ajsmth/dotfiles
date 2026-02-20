@@ -1,0 +1,7 @@
+(^|/)\.git($|/)
+^README\.md$
+^Brewfile$
+^scripts$
+^\.nvimlog$
+^home$
+^AGENTS\.md$

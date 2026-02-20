@@ -5,11 +5,19 @@ return {
     event = { 'BufReadPre', 'BufNewFile' },
     config = function()
       local lint = require 'lint'
-      lint.linters_by_ft = {
-        markdown = { 'markdownlint' },
-        c = { 'cpplint' },
-        cpp = { 'cpplint' },
-      }
+      lint.linters_by_ft = {}
+
+      local function add_linter(filetype, linter_name, executable)
+        local cmd = executable or linter_name
+        if vim.fn.executable(cmd) == 1 then
+          lint.linters_by_ft[filetype] = lint.linters_by_ft[filetype] or {}
+          table.insert(lint.linters_by_ft[filetype], linter_name)
+        end
+      end
+
+      add_linter('markdown', 'markdownlint')
+      add_linter('c', 'cpplint')
+      add_linter('cpp', 'cpplint')
 
       -- To allow other plugins to add linters to require('lint').linters_by_ft,
       -- instead set linters_by_ft like this:
