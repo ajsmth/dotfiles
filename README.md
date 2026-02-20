@@ -11,6 +11,7 @@ Cross-platform dotfiles setup for macOS and Linux using GNU Stow.
   - `./.config/ghostty -> ~/.config/ghostty`
 - `scripts/bootstrap.sh`: installs prerequisites (`stow`, package manager deps)
 - `scripts/dotfiles.sh`: stow wrapper for linking/unlinking/adopting configs
+- `scripts/install-fonts.sh`: installs fonts from `fonts/` into user font dirs
 - `scripts/setup.sh`: one-shot bootstrap + stow
 
 ## Quick start
@@ -20,6 +21,16 @@ git clone https://github.com/ajsmth/dotfiles.git ~/dotfiles
 cd ~/dotfiles
 ./scripts/setup.sh
 ```
+
+## Fonts
+
+1. Add font files to `fonts/` (`.ttf`, `.otf`, `.ttc`, `.woff`, `.woff2`).
+2. Install with `./scripts/install-fonts.sh` (or just run `./scripts/setup.sh`).
+
+Install targets:
+
+- macOS: `~/Library/Fonts`
+- Linux: `~/.local/share/fonts` (then cache refresh via `fc-cache` when available)
 
 ## Common commands
 

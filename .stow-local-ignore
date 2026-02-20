@@ -2,6 +2,7 @@
 ^README\.md$
 ^Brewfile$
 ^scripts$
+^fonts$
 ^\.nvimlog$
 ^home$
 ^AGENTS\.md$
