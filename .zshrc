@@ -69,8 +69,7 @@ alias studio='open -a "Android Studio"'
 alias lg='lazygit'
 export PATH="$HOME/.local/bin:$PATH"
 
-alias y='yazi'
-alias f='yazi'
-
 export EDITOR="nvim"
 bindkey -v 
+
+
