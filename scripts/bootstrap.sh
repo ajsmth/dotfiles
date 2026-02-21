@@ -202,11 +202,11 @@ main() {
         log 'Installing packages from Brewfile.'
         if ! brew bundle --file "$DOTFILES_DIR/Brewfile"; then
           log 'brew bundle failed, falling back to minimum install.'
-          brew install stow git tmux neovim pure nvm rbenv lazygit ripgrep fd fzf zoxide
+          brew install stow git tmux neovim pure nvm rbenv lazygit ripgrep fd fzf zoxide bat
         fi
       else
         log 'Installing minimum packages via Homebrew.'
-        brew install stow git tmux neovim pure nvm rbenv lazygit ripgrep fd fzf zoxide
+        brew install stow git tmux neovim pure nvm rbenv lazygit ripgrep fd fzf zoxide bat
       fi
       install_nvm
       install_bun
