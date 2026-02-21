@@ -78,21 +78,31 @@ ff() {
   local IGNORE_PAT='/(node_modules|\.git|\.yarn|vendor|__pycache__|\.next|dist|build|\.cache|Cellar|Library|\.Trash|CoreSimulator|Containers/Data)/'
   local CODE_EXT='(js|ts|jsx|tsx|mjs|cjs|py|rb|go|rs|lua|sh|zsh|bash|c|cpp|h|hpp|java|kt|swift|css|scss|json|yaml|yml|toml|ini|conf|md|mdx|sql|graphql|proto)'
   local WEB_EXT='(html|htm)'
-  local file action
+  local file action fifo
+  fifo=$(mktemp -u /tmp/ff.XXXXXX)
+  mkfifo "$fifo"
 
-  file=$(
-    {
-      mdfind -onlyin ~ 'kMDItemLastUsedDate >= $time.now(-2592000)' 2>/dev/null
-      fd --type f --absolute-path . 2>/dev/null
-    } | grep -vE "$IGNORE_PAT" | awk '!seen[$0]++' \
-      | fzf \
-          --query="$*" \
-          --prompt="recent> " \
-          --preview='bat --color=always --style=plain --line-range=:100 {} 2>/dev/null || file {}' \
-          --preview-window='right:50%:wrap' \
-          --bind='esc:abort' \
-          --header='enter: select  |  esc: quit'
-  ) || return
+  {
+    mdfind -onlyin ~ 'kMDItemLastUsedDate >= $time.now(-2592000)' 2>/dev/null
+    fd --type f --absolute-path . 2>/dev/null
+  } | grep -vE "$IGNORE_PAT" | awk '!seen[$0]++' > "$fifo" &
+  local src_pid=$!
+  disown
+
+  file=$(fzf \
+    --query="$*" \
+    --prompt="recent> " \
+    --preview='bat --color=always --style=plain --line-range=:100 {} 2>/dev/null || file {}' \
+    --preview-window='right:50%:wrap' \
+    --bind='esc:abort' \
+    --header='enter: select  |  esc: quit' \
+    < "$fifo")
+  local fzf_exit=$?
+
+  kill "$src_pid" 2>/dev/null
+  rm -f "$fifo"
+
+  (( fzf_exit != 0 )) && return
 
   local -a opts
   if [[ "$file" =~ \.(${WEB_EXT})$ ]]; then
