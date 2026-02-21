@@ -84,7 +84,7 @@ ff() {
 
   {
     mdfind -onlyin ~ 'kMDItemLastUsedDate >= $time.now(-2592000)' 2>/dev/null
-    fd --type f --absolute-path . 2>/dev/null
+    fd --type f --hidden --absolute-path . 2>/dev/null
   } | grep -vE "$IGNORE_PAT" | awk '!seen[$0]++' > "$fifo" &
   local src_pid=$!
   disown
