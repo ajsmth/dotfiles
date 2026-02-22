@@ -118,8 +118,25 @@ local function refresh_buffer()
 end
 
 vim.keymap.set('n', '<C-r>', refresh_buffer, { desc = 'Refresh buffer' })
+
 -- Diagnostic keymaps
-vim.keymap.set('n', '<leader>q', vim.diagnostic.setloclist, { desc = 'Open diagnostic [Q]uickfix list' })
+vim.keymap.set('n', '<leader>q', vim.diagnostic.setqflist, { desc = 'Open diagnostic quickfix list' })
+
+vim.keymap.set('n', '<C-m>', function()
+  if vim.bo.buftype == 'quickfix' then
+    vim.cmd 'cc'
+    return
+  end
+  require('telescope.builtin').oldfiles()
+end)
+
+vim.api.nvim_create_autocmd('FileType', {
+  pattern = 'qf',
+  callback = function(args)
+    vim.keymap.set('n', '<CR>', '<CR>', { buffer = args.buf, remap = false, silent = true })
+    vim.keymap.set('n', '<C-m>', '<CR>', { buffer = args.buf, remap = false, silent = true })
+  end,
+})
 
 -- Exit terminal mode in the builtin terminal with a shortcut that is a bit easier
 -- for people to discover. Otherwise, you normally need to press <C-\><C-n>, which
