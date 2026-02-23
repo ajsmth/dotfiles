@@ -117,6 +117,7 @@ local function refresh_buffer()
   vim.notify('🔄 Refreshed', vim.log.levels.INFO)
 end
 
+vim.api.nvim_create_user_command('W', 'w', {})
 vim.keymap.set('n', '<C-r>', refresh_buffer, { desc = 'Refresh buffer' })
 
 -- Diagnostic keymaps
