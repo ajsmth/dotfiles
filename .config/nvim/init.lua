@@ -90,46 +90,68 @@ vim.wo.number = true
 -- Clear highlights on search when pressing <Esc> in normal mode
 --  See `:help hlsearch`
 vim.keymap.set('n', '<Esc>', '<cmd>nohlsearch<CR>')
-
-local function refresh_buffer()
-  local buf = vim.api.nvim_get_current_buf()
-
-  -- 1) If the file changed on disk, pull it in (without discarding local edits)
-  -- checktime will prompt/handle depending on your settings
-  vim.cmd 'silent! checktime'
-
-  -- 2) Nudge treesitter to reparse (do NOT stop/start)
-  pcall(function()
-    local parser = vim.treesitter.get_parser(buf)
-    if parser then
-      parser:parse()
-    end
-  end)
-
-  -- 3) Redraw UI + re-run syntax (helps if you have non-treesitter syntax groups too)
-  vim.cmd 'silent! syntax sync fromstart'
-  vim.cmd 'redraw!'
-
-  -- 4) Optional: if your setup defines :LspRestart, use it (nice for tsserver stuck state)
-  pcall(vim.cmd, 'silent! LspRestart')
-
-  vim.notify('🔄 Refreshed', vim.log.levels.INFO)
-end
-
 vim.api.nvim_create_user_command('W', 'w', {})
-vim.keymap.set('n', '<C-r>', refresh_buffer, { desc = 'Refresh buffer' })
 
 -- Diagnostic keymaps
-vim.keymap.set('n', '<leader>q', vim.diagnostic.setqflist, { desc = 'Open diagnostic quickfix list' })
+--
 
-vim.keymap.set('n', '<C-m>', function()
-  if vim.bo.buftype == 'quickfix' then
-    vim.cmd 'cc'
+-- Diagnostics Keymaps
+-- =========================
+
+-- Show diagnostic under cursor (VSCode-style hover)
+vim.keymap.set('n', '<leader>e', function()
+  vim.diagnostic.open_float(nil, {
+    border = 'rounded',
+    source = 'if_many',
+    focusable = false,
+  })
+end, { desc = 'Show diagnostic under cursor' })
+
+-- Jump to next diagnostic (and show float)
+vim.keymap.set('n', ']d', function()
+  vim.diagnostic.jump {
+    count = 1,
+    float = true,
+  }
+end, { desc = 'Next diagnostic' })
+
+-- Jump to previous diagnostic (and show float)
+vim.keymap.set('n', '[d', function()
+  vim.diagnostic.jump {
+    count = -1,
+    float = true,
+  }
+end, { desc = 'Previous diagnostic' })
+
+-- Copy ALL diagnostics on current line to system clipboard
+vim.keymap.set('n', '<leader>y', function()
+  local line = vim.api.nvim_win_get_cursor(0)[1] - 1
+  local diagnostics = vim.diagnostic.get(0, { lnum = line })
+
+  if #diagnostics == 0 then
+    print 'No diagnostics on this line'
     return
   end
-  require('telescope.builtin').oldfiles()
-end)
 
+  local filename = vim.api.nvim_buf_get_name(0)
+  local messages = {}
+
+  for _, d in ipairs(diagnostics) do
+    table.insert(messages, string.format('%s:%d:%d: %s', filename, d.lnum + 1, d.col + 1, d.message))
+  end
+
+  local combined = table.concat(messages, '\n')
+  vim.fn.setreg('+', combined)
+
+  print('Copied ' .. #diagnostics .. ' diagnostic(s) to clipboard')
+end, { desc = 'Copy diagnostics on current line' })
+
+-- Restore <leader>q to open full diagnostic quickfix list
+vim.keymap.set('n', '<leader>q', function()
+  vim.diagnostic.setqflist()
+  vim.cmd 'copen'
+end, { desc = 'Open diagnostic quickfix list' })
+--
 vim.api.nvim_create_autocmd('FileType', {
   pattern = 'qf',
   callback = function(args)
