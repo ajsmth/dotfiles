@@ -71,5 +71,60 @@ return {
       vim.lsp.config(name, config)
       vim.lsp.enable(name)
     end
+    vim.api.nvim_create_autocmd('LspAttach', {
+      group = vim.api.nvim_create_augroup('custom-lsp-attach', { clear = true }),
+      callback = function(event)
+        local client = vim.lsp.get_client_by_id(event.data.client_id)
+        if not client then
+          return
+        end
+
+        local map = function(keys, func, desc, mode)
+          mode = mode or 'n'
+          vim.keymap.set(mode, keys, func, {
+            buffer = event.buf,
+            desc = 'LSP: ' .. desc,
+          })
+        end
+
+        -- 🔎 Navigation
+        map('gd', vim.lsp.buf.definition, 'Goto Definition')
+        map('gD', vim.lsp.buf.declaration, 'Goto Declaration')
+        map('gr', vim.lsp.buf.references, 'Goto References')
+        map('gI', vim.lsp.buf.implementation, 'Goto Implementation')
+
+        -- 🛠 Refactoring
+        map('<leader>rn', vim.lsp.buf.rename, 'Rename Symbol')
+        map('<leader>ca', vim.lsp.buf.code_action, 'Code Action', { 'n', 'x' })
+
+        -- 📚 Symbols
+        map('<leader>ds', vim.lsp.buf.document_symbol, 'Document Symbols')
+        map('<leader>ws', vim.lsp.buf.workspace_symbol, 'Workspace Symbols')
+
+        -- 💬 Hover
+        map('K', vim.lsp.buf.hover, 'Hover Documentation')
+
+        -- ✨ Highlight symbol under cursor
+        if client.supports_method 'textDocument/documentHighlight' then
+          local highlight_group = vim.api.nvim_create_augroup('custom-lsp-highlight', { clear = false })
+
+          vim.api.nvim_create_autocmd({ 'CursorHold', 'CursorHoldI' }, {
+            buffer = event.buf,
+            group = highlight_group,
+            callback = vim.lsp.buf.document_highlight,
+          })
+
+          vim.api.nvim_create_autocmd({ 'CursorMoved', 'CursorMovedI' }, {
+            buffer = event.buf,
+            group = highlight_group,
+            callback = vim.lsp.buf.clear_references,
+          })
+        end
+      end,
+    })
+
+    -- Optional but recommended (makes highlights feel instant)
+    vim.o.updatetime = 250
+    -- Highlight symbol under cursor (LSP documentHighlight)
   end,
 }
