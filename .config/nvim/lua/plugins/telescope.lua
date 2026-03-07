@@ -86,7 +86,21 @@ return {
 
     -- Seeget_dropdown { `:help telescope.builtin`
     local builtin = require 'telescope.builtin'
-    vim.keymap.set('n', '<C-p>', builtin.find_files)
+    local actions = require 'telescope.actions'
+    local themes = require 'telescope.themes'
+
+    vim.keymap.set('n', '<C-p>', function()
+      builtin.oldfiles(themes.get_dropdown {
+        initial_mode = 'normal',
+        mappings = {
+          n = {
+            ['j'] = actions.move_selection_next,
+            ['k'] = actions.move_selection_previous,
+          },
+        },
+      })
+    end, { desc = 'Search Recent Files' })
+
     vim.keymap.set('n', '<C-m>', builtin.oldfiles)
     vim.keymap.set('n', '<leader>sh', builtin.help_tags, { desc = '[S]earch [H]elp' })
     vim.keymap.set('n', '<leader>sk', builtin.keymaps, { desc = '[S]earch [K]eymaps' })

@@ -86,20 +86,41 @@ return {
             desc = 'LSP: ' .. desc,
           })
         end
+        local telescope = require 'telescope.builtin'
+        local actions = require 'telescope.actions'
+        local themes = require 'telescope.themes'
 
-        -- 🔎 Navigation
-        map('gd', vim.lsp.buf.definition, 'Goto Definition')
-        map('gD', vim.lsp.buf.declaration, 'Goto Declaration')
-        map('gr', vim.lsp.buf.references, 'Goto References')
-        map('gI', vim.lsp.buf.implementation, 'Goto Implementation')
+        local function lsp_picker(fn)
+          return function()
+            fn(themes.get_dropdown {
+              previewer = false,
+              initial_mode = 'normal',
+              mappings = {
+                i = {
+                  ['<C-j>'] = actions.move_selection_next,
+                  ['<C-k>'] = actions.move_selection_previous,
+                },
+                n = {
+                  ['j'] = actions.move_selection_next,
+                  ['k'] = actions.move_selection_previous,
+                },
+              },
+            })
+          end
+        end
 
-        -- 🛠 Refactoring
-        map('<leader>rn', vim.lsp.buf.rename, 'Rename Symbol')
-        map('<leader>ca', vim.lsp.buf.code_action, 'Code Action', { 'n', 'x' })
+        -- 🔎 Navigation (Telescope powered)
+        map('gd', lsp_picker(telescope.lsp_definitions), 'Goto Definition')
+        map('gr', lsp_picker(telescope.lsp_references), 'Goto References')
+        map('gI', lsp_picker(telescope.lsp_implementations), 'Goto Implementation')
+        map('gD', lsp_picker(telescope.lsp_type_definitions), 'Goto Type Definition')
 
         -- 📚 Symbols
-        map('<leader>ds', vim.lsp.buf.document_symbol, 'Document Symbols')
-        map('<leader>ws', vim.lsp.buf.workspace_symbol, 'Workspace Symbols')
+        map('<leader>ds', lsp_picker(telescope.lsp_document_symbols), 'Document Symbols')
+        map('<leader>ws', lsp_picker(telescope.lsp_workspace_symbols), 'Workspace Symbols')
+
+        map('<leader>rn', vim.lsp.buf.rename, 'Rename Symbol')
+        map('<leader>ca', vim.lsp.buf.code_action, 'Code Action', { 'n', 'x' })
 
         -- 💬 Hover
         map('K', vim.lsp.buf.hover, 'Hover Documentation')
