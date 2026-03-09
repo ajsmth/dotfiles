@@ -91,6 +91,7 @@ return {
 
     vim.keymap.set('n', '<C-p>', function()
       builtin.oldfiles(themes.get_dropdown {
+        cwd_only = true,
         initial_mode = 'normal',
         mappings = {
           n = {
@@ -101,7 +102,10 @@ return {
       })
     end, { desc = 'Search Recent Files' })
 
-    vim.keymap.set('n', '<C-m>', builtin.oldfiles)
+    vim.keymap.set('n', '<C-m>', function()
+      builtin.oldfiles { cwd_only = true }
+    end, { desc = 'Recent Files (Project)' })
+
     vim.keymap.set('n', '<leader>sh', builtin.help_tags, { desc = '[S]earch [H]elp' })
     vim.keymap.set('n', '<leader>sk', builtin.keymaps, { desc = '[S]earch [K]eymaps' })
     vim.keymap.set('n', '<leader>sf', builtin.find_files, { desc = '[S]earch [F]iles' })
