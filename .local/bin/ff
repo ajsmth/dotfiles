@@ -1,0 +1,54 @@
+#!/usr/bin/env zsh
+
+# ff — fuzzy find recent files and open them
+# Usage: ff [query]  (query is optional, pre-fills fzf)
+
+setopt local_options no_shwordsplit
+
+local IGNORE_PAT='/(node_modules|\.git|\.yarn|vendor|__pycache__|\.next|dist|build|\.cache|Cellar|Library|\.Trash|CoreSimulator|Containers/Data)/'
+local CODE_EXT='(js|ts|jsx|tsx|mjs|cjs|py|rb|go|rs|lua|sh|zsh|bash|c|cpp|h|hpp|java|kt|swift|css|scss|json|yaml|yml|toml|ini|conf|md|mdx|sql|graphql|proto)'
+local WEB_EXT='(html|htm)'
+local file action fifo
+
+fifo=$(mktemp -u /tmp/ff.XXXXXX)
+mkfifo "$fifo"
+
+{
+  mdfind -onlyin ~ 'kMDItemLastUsedDate >= $time.now(-2592000)' 2>/dev/null
+  fd --type f --hidden --absolute-path . 2>/dev/null
+} | grep -vE "$IGNORE_PAT" | awk '!seen[$0]++' > "$fifo" &
+local src_pid=$!
+disown
+
+file=$(fzf \
+  --query="$*" \
+  --prompt="recent> " \
+  --preview='bat --color=always --style=plain --line-range=:100 {} 2>/dev/null || file {}' \
+  --preview-window='right:50%:wrap' \
+  --bind='esc:abort' \
+  --header='enter: select  |  esc: quit' \
+  < "$fifo")
+local fzf_exit=$?
+
+kill "$src_pid" 2>/dev/null
+rm -f "$fifo"
+
+(( fzf_exit != 0 )) && exit 0
+
+local -a opts
+if [[ "$file" =~ \.(${WEB_EXT})$ ]]; then
+  opts=("System default (browser)" "Neovim" "Open in Finder" "Copy path")
+elif [[ "$file" =~ \.(${CODE_EXT})$ ]]; then
+  opts=("Neovim" "System default" "Open in Finder" "Copy path")
+else
+  opts=("System default" "Open in Finder" "Copy path")
+fi
+
+action=$(printf '%s\n' "${opts[@]}" | fzf --prompt="open as> " --height=6 --no-preview --bind='esc:abort') || exit 0
+
+case "$action" in
+  "Neovim")          nvim "$file" ;;
+  "System default"*) open "$file" ;;
+  "Open in Finder")  open -R "$file" ;;
+  "Copy path")       echo -n "$file" | pbcopy && echo "Copied: $file" ;;
+esac

@@ -6,6 +6,7 @@ Cross-platform dotfiles setup for macOS and Linux using GNU Stow.
 
 - Dotfiles live at repo root and are stowed as package `.`
   - `./.zshrc -> ~/.zshrc`
+  - `./.local/bin/ff -> ~/.local/bin/ff`
   - `./.tmux.conf -> ~/.tmux.conf`
   - `./.config/nvim -> ~/.config/nvim`
   - `./.config/ghostty -> ~/.config/ghostty`
