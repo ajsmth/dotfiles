@@ -72,3 +72,6 @@ export PATH="$HOME/.local/bin:$PATH"
 export EDITOR="nvim"
 bindkey -v
 
+
+# opencode
+export PATH=/Users/andrewsmith/.opencode/bin:$PATH

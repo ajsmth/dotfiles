@@ -88,12 +88,14 @@ return {
         end
         local telescope = require 'telescope.builtin'
         local actions = require 'telescope.actions'
-        local themes = require 'telescope.themes'
-
         local function lsp_picker(fn)
           return function()
-            fn(themes.get_dropdown {
-              previewer = false,
+            fn {
+              previewer = true,
+              layout_strategy = 'horizontal',
+              layout_config = {
+                preview_width = 0.6,
+              },
               initial_mode = 'normal',
               mappings = {
                 i = {
@@ -105,7 +107,7 @@ return {
                   ['k'] = actions.move_selection_previous,
                 },
               },
-            })
+            }
           end
         end
 

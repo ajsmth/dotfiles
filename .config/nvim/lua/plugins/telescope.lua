@@ -44,6 +44,20 @@ return {
             '!node_modules/**',
           },
         },
+        live_grep = {
+          previewer = true,
+          layout_strategy = 'horizontal',
+          layout_config = {
+            preview_width = 0.6,
+          },
+        },
+        grep_string = {
+          previewer = true,
+          layout_strategy = 'horizontal',
+          layout_config = {
+            preview_width = 0.6,
+          },
+        },
       },
 
       extensions = {
@@ -140,7 +154,7 @@ return {
       local cwd = vim.loop.cwd()
 
       -- get project files
-      local handle = io.popen "rg --files --hidden --glob '!**/.git/*' --glob '!node_modules/**'"
+      local handle = io.popen "rg --files --hidden --no-ignore --glob '!**/.git/*' --glob '!node_modules/**'"
 
       local project_files = {}
       if handle then
@@ -216,7 +230,7 @@ return {
     -- Navigate recent files first
     vim.keymap.set('n', '<C-p>', function()
       smart_files {
-        initial_mode = 'normal',
+        initial_mode = 'insert',
       }
     end, { desc = 'Files (recent first)' })
 
@@ -226,6 +240,12 @@ return {
         initial_mode = 'insert',
       }
     end, { desc = 'Files (search)' })
+
+    vim.keymap.set({ 'n', 'i' }, '<C-g>', function()
+      builtin.live_grep {
+        initial_mode = 'insert',
+      }
+    end, { desc = 'Search by Grep' })
 
     ---------------------------------------------------------------------
     -- STANDARD TELESCOPE MAPS

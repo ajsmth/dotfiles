@@ -1,0 +1,59 @@
+#!/usr/bin/env zsh
+
+setopt local_options no_shwordsplit
+
+local ip=""
+
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  local default_if
+  default_if=$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}')
+
+  if [[ -n "$default_if" ]]; then
+    ip=$(ipconfig getifaddr "$default_if" 2>/dev/null || true)
+  fi
+
+  if [[ -z "$ip" ]]; then
+    ip=$(ifconfig 2>/dev/null | awk '
+      BEGIN { RS=""; FS="\n" }
+      /status: active/ && /inet / {
+        for (i = 1; i <= NF; i++) {
+          if ($i ~ /^[[:space:]]*inet /) {
+            line = $i
+            sub(/^[[:space:]]+/, "", line)
+            split(line, parts, /[[:space:]]+/)
+            if (parts[2] != "127.0.0.1") {
+              print parts[2]
+              exit
+            }
+          }
+        }
+      }
+    ')
+  fi
+else
+  ip=$(ip route get 1.1.1.1 2>/dev/null | awk '
+    {
+      for (i = 1; i <= NF; i++) {
+        if ($i == "src") {
+          print $(i + 1)
+          exit
+        }
+      }
+    }
+  ')
+fi
+
+if [[ -z "$ip" ]]; then
+  echo "Unable to determine a local IP address." >&2
+  exit 1
+fi
+
+if command -v pbcopy >/dev/null 2>&1; then
+  echo -n "$ip" | pbcopy
+elif command -v wl-copy >/dev/null 2>&1; then
+  echo -n "$ip" | wl-copy
+elif command -v xclip >/dev/null 2>&1; then
+  echo -n "$ip" | xclip -selection clipboard
+fi
+
+echo "$ip"

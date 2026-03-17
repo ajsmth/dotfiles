@@ -168,6 +168,202 @@ vim.api.nvim_create_autocmd('FileType', {
 -- or just use <C-\><C-n> to exit terminal mode
 vim.keymap.set('t', '<Esc><Esc>', '<C-\\><C-n>', { desc = 'Exit terminal mode' })
 
+local primary_terminal_buf
+local primary_terminal_win
+local last_editor_win
+
+local function is_terminal_buffer(buf)
+  return buf and vim.api.nvim_buf_is_valid(buf) and vim.bo[buf].buftype == 'terminal'
+end
+
+local function is_edit_window(win)
+  if not win or not vim.api.nvim_win_is_valid(win) then
+    return false
+  end
+
+  return not is_terminal_buffer(vim.api.nvim_win_get_buf(win))
+end
+
+local function focus_primary_terminal()
+  if is_terminal_buffer(primary_terminal_buf) and primary_terminal_win and vim.api.nvim_win_is_valid(primary_terminal_win) then
+    vim.api.nvim_set_current_win(primary_terminal_win)
+    vim.cmd 'startinsert'
+    return
+  end
+
+  if is_edit_window(vim.api.nvim_get_current_win()) then
+    last_editor_win = vim.api.nvim_get_current_win()
+  end
+
+  vim.cmd 'belowright split'
+  vim.cmd 'resize 15'
+
+  if is_terminal_buffer(primary_terminal_buf) then
+    vim.api.nvim_win_set_buf(0, primary_terminal_buf)
+    primary_terminal_win = vim.api.nvim_get_current_win()
+    vim.cmd 'startinsert'
+    return
+  end
+
+  vim.cmd 'terminal'
+  primary_terminal_buf = vim.api.nvim_get_current_buf()
+  primary_terminal_win = vim.api.nvim_get_current_win()
+  vim.bo[primary_terminal_buf].buflisted = true
+  vim.b[primary_terminal_buf].is_primary_terminal = true
+  vim.cmd 'startinsert'
+end
+
+local function hide_primary_terminal()
+  local term_win = primary_terminal_win
+
+  if not term_win or not vim.api.nvim_win_is_valid(term_win) then
+    return
+  end
+
+  if is_edit_window(last_editor_win) then
+    vim.api.nvim_set_current_win(last_editor_win)
+  elseif #vim.api.nvim_tabpage_list_wins(0) > 1 then
+    vim.cmd 'wincmd p'
+  else
+    vim.cmd 'enew'
+  end
+
+  if vim.api.nvim_win_is_valid(term_win) then
+    vim.api.nvim_win_close(term_win, false)
+  end
+
+  primary_terminal_win = nil
+end
+
+local function toggle_primary_terminal()
+  local current_buf = vim.api.nvim_get_current_buf()
+
+  if current_buf == primary_terminal_buf and is_terminal_buffer(current_buf) then
+    vim.cmd 'stopinsert'
+    hide_primary_terminal()
+    return
+  end
+
+  focus_primary_terminal()
+end
+
+local function terminal_picker()
+  local ok, pickers = pcall(require, 'telescope.pickers')
+  local ok_finders, finders = pcall(require, 'telescope.finders')
+  local ok_conf, telescope_config = pcall(require, 'telescope.config')
+  local ok_actions, actions = pcall(require, 'telescope.actions')
+  local ok_action_state, action_state = pcall(require, 'telescope.actions.state')
+
+  if not (ok and ok_finders and ok_conf and ok_actions and ok_action_state) then
+    vim.notify('Telescope is not available', vim.log.levels.ERROR)
+    return
+  end
+
+  local terminals = {}
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if is_terminal_buffer(buf) then
+      local name = vim.api.nvim_buf_get_name(buf)
+      local label = name ~= '' and vim.fn.fnamemodify(name, ':t') or ('term://' .. buf)
+      if buf == primary_terminal_buf then
+        label = '* ' .. label
+      end
+      table.insert(terminals, {
+        buf = buf,
+        ordinal = label,
+        display = label,
+      })
+    end
+  end
+
+  if vim.tbl_isempty(terminals) then
+    vim.notify('No terminal buffers found', vim.log.levels.INFO)
+    return
+  end
+
+  pickers
+    .new({}, {
+      prompt_title = 'Terminal Buffers',
+      finder = finders.new_table {
+        results = terminals,
+        entry_maker = function(entry)
+          return {
+            value = entry,
+            display = entry.display,
+            ordinal = entry.ordinal,
+          }
+        end,
+      },
+      sorter = telescope_config.values.generic_sorter({}),
+      previewer = telescope_config.values.grep_previewer({}),
+      attach_mappings = function(prompt_bufnr)
+        actions.select_default:replace(function()
+          local selection = action_state.get_selected_entry()
+          actions.close(prompt_bufnr)
+
+          if not selection then
+            return
+          end
+
+          if is_edit_window(vim.api.nvim_get_current_win()) then
+            last_editor_win = vim.api.nvim_get_current_win()
+          end
+
+          vim.cmd 'stopinsert'
+          vim.cmd('buffer ' .. selection.value.buf)
+
+          if selection.value.buf == primary_terminal_buf then
+            primary_terminal_win = vim.api.nvim_get_current_win()
+          end
+
+          vim.cmd 'startinsert'
+        end)
+
+        return true
+      end,
+    })
+    :find()
+end
+
+vim.api.nvim_create_autocmd({ 'WinEnter', 'BufEnter' }, {
+  group = vim.api.nvim_create_augroup('dotfiles-terminal-workflow', { clear = true }),
+  callback = function()
+    local win = vim.api.nvim_get_current_win()
+    if is_edit_window(win) then
+      last_editor_win = win
+    elseif primary_terminal_buf and vim.api.nvim_get_current_buf() == primary_terminal_buf then
+      primary_terminal_win = win
+    end
+  end,
+})
+
+vim.api.nvim_create_autocmd('TermClose', {
+  group = vim.api.nvim_create_augroup('dotfiles-terminal-close', { clear = true }),
+  callback = function(args)
+    if args.buf == primary_terminal_buf then
+      primary_terminal_buf = nil
+      primary_terminal_win = nil
+    end
+  end,
+})
+
+vim.api.nvim_create_autocmd('TermOpen', {
+  group = vim.api.nvim_create_augroup('dotfiles-terminal-keymaps', { clear = true }),
+  callback = function(args)
+    vim.keymap.set('n', '<leader>tr', function()
+      vim.opt_local.relativenumber = not vim.opt_local.relativenumber:get()
+    end, {
+      buffer = args.buf,
+      desc = 'Toggle terminal relative line numbers',
+    })
+  end,
+})
+
+vim.keymap.set({ 'n', 't' }, '<C-\\>', toggle_primary_terminal, { desc = 'Toggle primary terminal' })
+vim.keymap.set({ 'n', 't' }, '<leader>tp', function()
+  vim.cmd 'stopinsert'
+  terminal_picker()
+end, { desc = 'Pick terminal buffer' })
+
 -- Keep cursor centered when jumping half a page up/down
 vim.keymap.set('n', '<C-u>', '<C-u>zz')
 vim.keymap.set('n', '<C-d>', '<C-d>zz')
@@ -280,6 +476,7 @@ require('lazy').setup({
         { '<leader>c', group = '[C]ode', mode = { 'n', 'x' } },
         { '<leader>r', group = '[R]ename' },
         { '<leader>s', group = '[S]earch' },
+        { '<leader>t', group = '[T]erminal' },
         { '<leader>w', group = '[W]orkspace' },
       },
     },
