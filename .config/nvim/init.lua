@@ -171,6 +171,7 @@ vim.keymap.set('t', '<Esc><Esc>', '<C-\\><C-n>', { desc = 'Exit terminal mode' }
 local primary_terminal_buf
 local primary_terminal_win
 local last_editor_win
+local last_editor_buf
 
 local function is_terminal_buffer(buf)
   return buf and vim.api.nvim_buf_is_valid(buf) and vim.bo[buf].buftype == 'terminal'
@@ -184,24 +185,37 @@ local function is_edit_window(win)
   return not is_terminal_buffer(vim.api.nvim_win_get_buf(win))
 end
 
-local function focus_primary_terminal()
-  if is_terminal_buffer(primary_terminal_buf) and primary_terminal_win and vim.api.nvim_win_is_valid(primary_terminal_win) then
-    vim.api.nvim_set_current_win(primary_terminal_win)
-    vim.cmd 'startinsert'
-    return
-  end
+local function is_edit_buffer(buf)
+  return buf and vim.api.nvim_buf_is_valid(buf) and vim.bo[buf].buftype ~= 'terminal'
+end
 
-  if is_edit_window(vim.api.nvim_get_current_win()) then
-    last_editor_win = vim.api.nvim_get_current_win()
-  end
-
-  vim.cmd 'belowright split'
-  vim.cmd 'resize 15'
-
+local function get_first_terminal_buffer()
   if is_terminal_buffer(primary_terminal_buf) then
-    vim.api.nvim_win_set_buf(0, primary_terminal_buf)
+    return primary_terminal_buf
+  end
+
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if is_terminal_buffer(buf) then
+      primary_terminal_buf = buf
+      return buf
+    end
+  end
+
+  return nil
+end
+
+local function open_terminal_buffer()
+  local terminal_buf = get_first_terminal_buffer()
+
+  if terminal_buf then
+    if is_edit_window(vim.api.nvim_get_current_win()) then
+      last_editor_win = vim.api.nvim_get_current_win()
+      last_editor_buf = vim.api.nvim_get_current_buf()
+    end
+
+    vim.cmd('buffer ' .. terminal_buf)
+    primary_terminal_buf = terminal_buf
     primary_terminal_win = vim.api.nvim_get_current_win()
-    vim.cmd 'startinsert'
     return
   end
 
@@ -210,41 +224,21 @@ local function focus_primary_terminal()
   primary_terminal_win = vim.api.nvim_get_current_win()
   vim.bo[primary_terminal_buf].buflisted = true
   vim.b[primary_terminal_buf].is_primary_terminal = true
-  vim.cmd 'startinsert'
-end
-
-local function hide_primary_terminal()
-  local term_win = primary_terminal_win
-
-  if not term_win or not vim.api.nvim_win_is_valid(term_win) then
-    return
-  end
-
-  if is_edit_window(last_editor_win) then
-    vim.api.nvim_set_current_win(last_editor_win)
-  elseif #vim.api.nvim_tabpage_list_wins(0) > 1 then
-    vim.cmd 'wincmd p'
-  else
-    vim.cmd 'enew'
-  end
-
-  if vim.api.nvim_win_is_valid(term_win) then
-    vim.api.nvim_win_close(term_win, false)
-  end
-
-  primary_terminal_win = nil
 end
 
 local function toggle_primary_terminal()
-  local current_buf = vim.api.nvim_get_current_buf()
-
-  if current_buf == primary_terminal_buf and is_terminal_buffer(current_buf) then
-    vim.cmd 'stopinsert'
-    hide_primary_terminal()
+  if is_terminal_buffer(vim.api.nvim_get_current_buf()) then
+    if is_edit_buffer(last_editor_buf) then
+      vim.cmd('buffer ' .. last_editor_buf)
+    elseif is_edit_window(last_editor_win) then
+      vim.api.nvim_set_current_win(last_editor_win)
+    else
+      vim.notify('No editor buffer to jump back to', vim.log.levels.INFO)
+    end
     return
   end
 
-  focus_primary_terminal()
+  open_terminal_buffer()
 end
 
 local function terminal_picker()
@@ -306,6 +300,7 @@ local function terminal_picker()
 
           if is_edit_window(vim.api.nvim_get_current_win()) then
             last_editor_win = vim.api.nvim_get_current_win()
+            last_editor_buf = vim.api.nvim_get_current_buf()
           end
 
           vim.cmd 'stopinsert'
@@ -314,8 +309,6 @@ local function terminal_picker()
           if selection.value.buf == primary_terminal_buf then
             primary_terminal_win = vim.api.nvim_get_current_win()
           end
-
-          vim.cmd 'startinsert'
         end)
 
         return true
@@ -330,6 +323,7 @@ vim.api.nvim_create_autocmd({ 'WinEnter', 'BufEnter' }, {
     local win = vim.api.nvim_get_current_win()
     if is_edit_window(win) then
       last_editor_win = win
+      last_editor_buf = vim.api.nvim_get_current_buf()
     elseif primary_terminal_buf and vim.api.nvim_get_current_buf() == primary_terminal_buf then
       primary_terminal_win = win
     end
@@ -346,6 +340,9 @@ vim.api.nvim_create_autocmd('TermClose', {
   end,
 })
 
+vim.api.nvim_create_user_command('TerminalToggle', open_terminal_buffer, {})
+vim.cmd [[cnoreabbrev <expr> terminal getcmdtype() == ':' && getcmdline() ==# 'terminal' ? 'TerminalToggle' : 'terminal']]
+
 vim.api.nvim_create_autocmd('TermOpen', {
   group = vim.api.nvim_create_augroup('dotfiles-terminal-keymaps', { clear = true }),
   callback = function(args)
@@ -358,7 +355,7 @@ vim.api.nvim_create_autocmd('TermOpen', {
   end,
 })
 
-vim.keymap.set({ 'n', 't' }, '<C-\\>', toggle_primary_terminal, { desc = 'Toggle primary terminal' })
+vim.keymap.set('n', '<C-\\>', toggle_primary_terminal, { desc = 'Toggle terminal buffer' })
 vim.keymap.set({ 'n', 't' }, '<leader>tp', function()
   vim.cmd 'stopinsert'
   terminal_picker()
