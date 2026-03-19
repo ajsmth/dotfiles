@@ -24,6 +24,45 @@ return {
     local finders = require 'telescope.finders'
     local conf = require('telescope.config').values
 
+    local function get_visual_selection()
+      local mode = vim.fn.mode()
+      if mode ~= 'v' and mode ~= 'V' and mode ~= '\22' then
+        return nil
+      end
+
+      local start_pos = vim.fn.getpos 'v'
+      local end_pos = vim.fn.getpos '.'
+      local start_line = start_pos[2]
+      local start_col = start_pos[3]
+      local end_line = end_pos[2]
+      local end_col = end_pos[3]
+
+      if start_line > end_line or (start_line == end_line and start_col > end_col) then
+        start_line, end_line = end_line, start_line
+        start_col, end_col = end_col, start_col
+      end
+
+      local lines = vim.fn.getline(start_line, end_line)
+      if vim.tbl_isempty(lines) then
+        return nil
+      end
+
+      lines[1] = string.sub(lines[1], start_col)
+      lines[#lines] = string.sub(lines[#lines], 1, end_col)
+
+      return table.concat(lines, ' ')
+    end
+
+    local function grep_with_selection()
+      local selection = get_visual_selection()
+      local default_text = selection and vim.trim(selection) or vim.fn.expand '<cword>'
+
+      builtin.live_grep {
+        initial_mode = 'insert',
+        default_text = default_text,
+      }
+    end
+
     telescope.setup {
       defaults = {
         path_display = {
@@ -241,11 +280,11 @@ return {
       }
     end, { desc = 'Files (search)' })
 
-    vim.keymap.set({ 'n', 'i' }, '<C-g>', function()
-      builtin.live_grep {
-        initial_mode = 'insert',
-      }
-    end, { desc = 'Search by Grep' })
+    vim.keymap.set('n', '<C-g>', grep_with_selection, { desc = 'Search by Grep' })
+    vim.keymap.set('x', '<C-g>', function()
+      vim.schedule(grep_with_selection)
+      return '<Esc>'
+    end, { desc = 'Search by Grep', expr = true })
 
     ---------------------------------------------------------------------
     -- STANDARD TELESCOPE MAPS
