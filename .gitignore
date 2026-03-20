@@ -1,1 +1,4 @@
 .nvimlog
+.codex/
+.claude/
+.local/

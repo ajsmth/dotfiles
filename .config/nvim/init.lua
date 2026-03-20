@@ -27,6 +27,10 @@ vim.opt.showmode = false
 --  Schedule the setting after `UiEnter` because it can increase startup-time.
 --  Remove this option if you want your OS clipboard to remain independent.
 --  See `:help 'clipboard'`
+if vim.env.SSH_CONNECTION or vim.env.SSH_TTY or vim.env.TMUX then
+  vim.g.clipboard = 'osc52'
+end
+
 vim.schedule(function()
   vim.opt.clipboard = 'unnamedplus'
 end)
@@ -287,8 +291,8 @@ local function terminal_picker()
           }
         end,
       },
-      sorter = telescope_config.values.generic_sorter({}),
-      previewer = telescope_config.values.grep_previewer({}),
+      sorter = telescope_config.values.generic_sorter {},
+      previewer = telescope_config.values.grep_previewer {},
       attach_mappings = function(prompt_bufnr)
         actions.select_default:replace(function()
           local selection = action_state.get_selected_entry()

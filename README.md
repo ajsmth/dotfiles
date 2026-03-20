@@ -12,6 +12,7 @@ Cross-platform dotfiles setup for macOS and Linux using GNU Stow.
   - `./.config/ghostty -> ~/.config/ghostty`
 - `scripts/bootstrap.sh`: installs prerequisites (`stow`, package manager deps)
 - `scripts/dotfiles.sh`: stow wrapper for linking/unlinking/adopting configs
+- `scripts/install-terminfo.sh`: installs vendored `xterm-ghostty` terminfo locally or on a remote host
 - `scripts/install-fonts.sh`: installs fonts from `fonts/` into user font dirs
 - `scripts/setup.sh`: one-shot bootstrap + stow
 
@@ -21,6 +22,18 @@ Cross-platform dotfiles setup for macOS and Linux using GNU Stow.
 git clone https://github.com/ajsmth/dotfiles.git ~/dotfiles
 cd ~/dotfiles
 ./scripts/setup.sh
+```
+
+## Ghostty Remote SSH Fix
+
+Ghostty uses `TERM=xterm-ghostty`. Remote hosts that do not have that terminfo entry can break `tmux`, cursor movement, or full-screen apps.
+
+This repo vendors the `xterm-ghostty` terminfo source and installs it locally during `./scripts/setup.sh`.
+
+To install the same entry on a remote host:
+
+```bash
+./scripts/install-terminfo.sh remote <ssh-target>
 ```
 
 ## Fonts
@@ -59,6 +72,7 @@ Install targets:
 
 - `scripts/bootstrap.sh` supports `brew` on macOS and `apt`/`dnf`/`pacman` on Linux.
 - On macOS, bootstrap installs: `git`, `stow`, `tmux`, `neovim`, `pure`, `nvm`, `rbenv`, `lazygit`, `ripgrep`, `fd`, `fzf`, `zoxide`, `ghostty`.
+- `scripts/setup.sh` installs the vendored `xterm-ghostty` terminfo into `~/.terminfo`.
 - `bun` is installed via the official install script when missing.
 - `nvm` is installed from Homebrew when available; bootstrap falls back to `~/.nvm` git install if needed.
 - On Linux, Ghostty install is attempted via distro package manager (`pacman`/`apk`/`zypper`/`snap`) when available.

@@ -96,7 +96,7 @@ return {
               layout_config = {
                 preview_width = 0.6,
               },
-              initial_mode = 'normal',
+              initial_mode = 'insert',
               mappings = {
                 i = {
                   ['<C-j>'] = actions.move_selection_next,

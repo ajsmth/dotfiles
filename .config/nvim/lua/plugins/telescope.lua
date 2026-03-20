@@ -138,6 +138,10 @@ return {
       return nil
     end
 
+    local function include_in_smart_files(path)
+      return path and not path:match '^node_modules/' and not path:match '/node_modules/' and not path:match '^dist/' and not path:match '/dist/'
+    end
+
     local function list_oldfiles()
       local seen = {}
       local recent = {}
@@ -193,13 +197,13 @@ return {
       local cwd = vim.loop.cwd()
 
       -- get project files
-      local handle = io.popen "rg --files --hidden --no-ignore --glob '!**/.git/*' --glob '!node_modules/**'"
+      local handle = io.popen "rg --files --hidden --no-ignore --glob '!**/.git/*' --glob '!node_modules/**' --glob '!dist/**'"
 
       local project_files = {}
       if handle then
         for file in handle:lines() do
           local project_path = to_project_path(file, cwd)
-          if project_path then
+          if include_in_smart_files(project_path) then
             table.insert(project_files, project_path)
           end
         end
@@ -210,7 +214,7 @@ return {
       local recent = {}
       for _, file in ipairs(session_recent_files) do
         local project_path = to_project_path(file, cwd)
-        if project_path then
+        if include_in_smart_files(project_path) then
           table.insert(recent, project_path)
         end
       end
