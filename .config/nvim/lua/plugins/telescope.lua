@@ -55,7 +55,7 @@ return {
 
     local function grep_with_selection()
       local selection = get_visual_selection()
-      local default_text = selection and vim.trim(selection) or vim.fn.expand '<cword>'
+      local default_text = selection and vim.trim(selection) or nil
 
       builtin.live_grep {
         initial_mode = 'insert',
