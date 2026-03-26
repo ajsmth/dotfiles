@@ -5,7 +5,7 @@
 
 setopt local_options no_shwordsplit
 
-local IGNORE_PAT='/(node_modules|\.git|\.yarn|vendor|__pycache__|\.next|dist|build|\.cache|Cellar|Library|\.Trash|CoreSimulator|Containers/Data)/'
+local IGNORE_PAT='/(node_modules|\.git|\.worktrees|\.yarn|vendor|__pycache__|\.next|dist|build|\.cache|Cellar|Library|\.Trash|CoreSimulator|Containers/Data)/'
 local CODE_EXT='(js|ts|jsx|tsx|mjs|cjs|py|rb|go|rs|lua|sh|zsh|bash|c|cpp|h|hpp|java|kt|swift|css|scss|json|yaml|yml|toml|ini|conf|md|mdx|sql|graphql|proto)'
 local WEB_EXT='(html|htm)'
 local file action fifo

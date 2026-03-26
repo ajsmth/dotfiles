@@ -86,7 +86,6 @@ vim.g.mapleader = ' '
 
 vim.opt.swapfile = false
 
-vim.keymap.set('n', '<leader>h', ':nohlsearch<CR>')
 vim.wo.number = true
 -- [[ Basic Keymaps ]]
 --  See `:help vim.keymap.set()`

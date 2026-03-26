@@ -23,6 +23,25 @@ return {
     local pickers = require 'telescope.pickers'
     local finders = require 'telescope.finders'
     local conf = require('telescope.config').values
+    local grep_args = {
+      'rg',
+      '--color=never',
+      '--no-heading',
+      '--with-filename',
+      '--line-number',
+      '--column',
+      '--smart-case',
+      '--hidden',
+      '--no-ignore',
+      '--glob',
+      '!**/.git/*',
+      '--glob',
+      '!**/.worktrees/*',
+      '--glob',
+      '!node_modules/**',
+      '--glob',
+      '!dist/**',
+    }
 
     local function get_visual_selection()
       local mode = vim.fn.mode()
@@ -68,6 +87,7 @@ return {
         path_display = {
           shorten = 4,
         },
+        vimgrep_arguments = grep_args,
       },
 
       pickers = {
@@ -79,6 +99,8 @@ return {
             '--hidden',
             '--glob',
             '!**/.git/*',
+            '--glob',
+            '!**/.worktrees/*',
             '--glob',
             '!node_modules/**',
           },
@@ -139,7 +161,13 @@ return {
     end
 
     local function include_in_smart_files(path)
-      return path and not path:match '^node_modules/' and not path:match '/node_modules/' and not path:match '^dist/' and not path:match '/dist/'
+      return path
+        and not path:match '^%.worktrees/'
+        and not path:match '/%.worktrees/'
+        and not path:match '^node_modules/'
+        and not path:match '/node_modules/'
+        and not path:match '^dist/'
+        and not path:match '/dist/'
     end
 
     local function list_oldfiles()
@@ -197,7 +225,7 @@ return {
       local cwd = vim.loop.cwd()
 
       -- get project files
-      local handle = io.popen "rg --files --hidden --no-ignore --glob '!**/.git/*' --glob '!node_modules/**' --glob '!dist/**'"
+      local handle = io.popen "rg --files --hidden --no-ignore --glob '!**/.git/*' --glob '!**/.worktrees/*' --glob '!node_modules/**' --glob '!dist/**'"
 
       local project_files = {}
       if handle then

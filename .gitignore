@@ -1,4 +1,7 @@
 .nvimlog
 .codex/
 .claude/
-.local/
+.worktrees/
+.local/*
+!.local/bin/
+!.local/bin/**
