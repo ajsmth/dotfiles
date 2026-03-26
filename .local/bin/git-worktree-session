@@ -20,6 +20,7 @@ Usage:
 
 Creates git worktrees under .worktrees/<name> and uses branch names wt/<name>.
 Each worktree gets its own tmux session named wt-<repo>-<name>.
+In the picker, press x on a selected worktree to confirm removal.
 EOF
 }
 
@@ -186,6 +187,27 @@ open_worktree() {
   attach_or_switch "$name"
 }
 
+remove_worktree() {
+  local name worktree_dir reply
+
+  name="$1"
+  log "remove_worktree name=$name"
+  sanitize_name "$name"
+  worktree_dir="$(worktree_path "$name")"
+
+  [[ -d "$worktree_dir" ]] || die "Worktree does not exist: $worktree_dir"
+
+  print -- "Remove worktree '$name' at $worktree_dir? [y/N] "
+  read -r reply
+  if [[ ! "$reply" =~ ^[Yy]$ ]]; then
+    log "remove_worktree cancelled name=$name"
+    return 1
+  fi
+
+  git worktree remove "$worktree_dir"
+  log "remove_worktree removed name=$name dir=$worktree_dir"
+}
+
 list_worktrees() {
   local wt_dir worktree_entry branch line name state
 
@@ -254,47 +276,63 @@ picker_rows() {
 }
 
 pick_worktree() {
-  local selection action name header repo script_path
+  local selection action name header repo script_path key selected_line
 
   require_cmd fzf
   log "pick_worktree begin"
   repo="$(repo_main_root)"
-  header=$'enter: open/create  |  up/down: move  |  ctrl-j/ctrl-k: move  |  esc: close\n'
+  header=$'enter: open/create  |  x: remove  |  up/down: move  |  ctrl-j/ctrl-k: move  |  esc: close\n'
   header+="repo: $repo"
   script_path="$(command -v git-worktree-session 2>/dev/null || print -- "${0:A}")"
 
-  selection="$(
-    picker_rows "" | fzf \
-      --delimiter=$'\t' \
-      --with-nth=3 \
-      --prompt='worktree> ' \
-      --header="$header" \
-      --disabled \
-      --bind "start:reload:$script_path rows" \
-      --bind "change:reload:$script_path rows {q}" \
-      --bind 'ctrl-j:down' \
-      --bind 'ctrl-k:up' \
-      --no-preview
-  )" || {
-    log "pick_worktree fzf exited without selection"
-    exit 0
-  }
+  while true; do
+    selection="$(
+      picker_rows "" | fzf \
+        --expect=enter,x \
+        --delimiter=$'\t' \
+        --with-nth=3 \
+        --prompt='worktree> ' \
+        --header="$header" \
+        --disabled \
+        --bind "start:reload:$script_path rows" \
+        --bind "change:reload:$script_path rows {q}" \
+        --bind 'ctrl-j:down' \
+        --bind 'ctrl-k:up' \
+        --no-preview
+    )" || {
+      log "pick_worktree fzf exited without selection"
+      exit 0
+    }
 
-  action="$(print -- "$selection" | cut -f1)"
-  name="$(print -- "$selection" | cut -f2)"
-  log "pick_worktree action=${action:-<empty>} name=${name:-<empty>}"
+    key="$(print -- "$selection" | sed -n '1p')"
+    selected_line="$(print -- "$selection" | sed -n '2p')"
 
-  case "$action" in
-    create)
-      create_worktree "$name"
-      ;;
-    open)
-      open_worktree "$name"
-      ;;
-    *)
-      die "Unknown picker action: ${action:-<empty>}"
-      ;;
-  esac
+    [[ -n "$selected_line" ]] || continue
+
+    action="$(print -- "$selected_line" | cut -f1)"
+    name="$(print -- "$selected_line" | cut -f2)"
+    log "pick_worktree key=${key:-<empty>} action=${action:-<empty>} name=${name:-<empty>}"
+
+    case "${key:-enter}:$action" in
+      enter:create)
+        create_worktree "$name"
+        return
+        ;;
+      enter:open)
+        open_worktree "$name"
+        return
+        ;;
+      x:open)
+        remove_worktree "$name" || true
+        ;;
+      x:create)
+        log "remove_worktree ignored create row name=$name"
+        ;;
+      *)
+        die "Unknown picker action: key=${key:-<empty>} action=${action:-<empty>}"
+        ;;
+    esac
+  done
 }
 
 main() {
