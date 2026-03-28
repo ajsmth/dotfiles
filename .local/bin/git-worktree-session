@@ -78,6 +78,14 @@ worktree_path() {
   print -- "$(worktrees_dir)/$1"
 }
 
+local_file_allowlist() {
+  print -- '.env'
+  print -- '.env.local'
+  print -- '.env.development'
+  print -- '.env.test'
+  print -- '.env.production'
+}
+
 session_name() {
   local repo name
 
@@ -85,7 +93,7 @@ session_name() {
   name="$1"
   repo="${repo//[^A-Za-z0-9._-]/-}"
   name="${name//[^A-Za-z0-9._-]/-}"
-  print -- "wt-${repo}-${name}"
+  print -- "${repo}/${name}"
 }
 
 current_base_ref() {
@@ -112,6 +120,18 @@ current_base_ref() {
 
 has_tmux_session() {
   tmux has-session -t "=$(session_name "$1")" 2>/dev/null
+}
+
+kill_tmux_session() {
+  local name session
+
+  name="$1"
+  session="$(session_name "$name")"
+
+  if has_tmux_session "$name"; then
+    log "killing tmux session $session"
+    tmux kill-session -t "=$session"
+  fi
 }
 
 attach_or_switch() {
@@ -145,7 +165,29 @@ ensure_tmux_session() {
   fi
 }
 
-create_worktree() {
+copy_local_files_to_worktree() {
+  local source_root target_root rel_path source_path target_path
+
+  source_root="$(repo_root)"
+  target_root="$1"
+
+  while IFS= read -r rel_path; do
+    source_path="${source_root}/${rel_path}"
+    target_path="${target_root}/${rel_path}"
+
+    [[ -f "$source_path" ]] || continue
+
+    if [[ -e "$target_path" ]]; then
+      log "copy_local_files skip existing target=$target_path"
+      continue
+    fi
+
+    log "copy_local_files copy source=$source_path target=$target_path"
+    cp -p "$source_path" "$target_path"
+  done < <(local_file_allowlist)
+}
+
+create_worktree_dir() {
   local name worktree_dir branch base_ref
 
   name="$1"
@@ -160,8 +202,6 @@ create_worktree() {
 
   if [[ -d "$worktree_dir" ]]; then
     log "worktree already exists: $worktree_dir"
-    ensure_tmux_session "$name"
-    attach_or_switch "$name"
     return
   fi
 
@@ -172,6 +212,15 @@ create_worktree() {
     log "creating branch and worktree $branch"
     git worktree add -b "$branch" "$worktree_dir" "$base_ref"
   fi
+
+  copy_local_files_to_worktree "$worktree_dir"
+}
+
+create_worktree() {
+  local name
+
+  name="$1"
+  create_worktree_dir "$name"
 
   ensure_tmux_session "$name"
   attach_or_switch "$name"
@@ -187,8 +236,22 @@ open_worktree() {
   attach_or_switch "$name"
 }
 
+confirm_capture_worktree() {
+  local name
+
+  name="$1"
+  gum confirm "Create worktree '$name' with current changes?"
+}
+
+confirm_remove_worktree() {
+  local name
+
+  name="$1"
+  gum confirm "Delete worktree '$name' and kill its tmux session?"
+}
+
 remove_worktree() {
-  local name worktree_dir reply
+  local name worktree_dir
 
   name="$1"
   log "remove_worktree name=$name"
@@ -197,15 +260,45 @@ remove_worktree() {
 
   [[ -d "$worktree_dir" ]] || die "Worktree does not exist: $worktree_dir"
 
-  print -- "Remove worktree '$name' at $worktree_dir? [y/N] "
-  read -r reply
-  if [[ ! "$reply" =~ ^[Yy]$ ]]; then
-    log "remove_worktree cancelled name=$name"
-    return 1
-  fi
-
+  kill_tmux_session "$name"
   git worktree remove "$worktree_dir"
   log "remove_worktree removed name=$name dir=$worktree_dir"
+}
+
+has_local_changes() {
+  [[ -n "$(git status --porcelain --untracked-files=all 2>/dev/null)" ]]
+}
+
+capture_worktree() {
+  local name worktree_dir stash_message stash_ref
+
+  name="$1"
+  sanitize_name "$name"
+  worktree_dir="$(worktree_path "$name")"
+  log "capture_worktree name=$name dir=$worktree_dir"
+
+  if ! has_local_changes; then
+    log "capture_worktree no local changes; falling back to create"
+    create_worktree "$name"
+    return
+  fi
+
+  stash_message="git-worktree-session capture $name $(date '+%Y-%m-%d %H:%M:%S')"
+  git stash push --include-untracked -m "$stash_message" >/dev/null
+  stash_ref='stash@{0}'
+
+  create_worktree_dir "$name"
+
+  if git -C "$worktree_dir" stash apply --index "$stash_ref"; then
+    git stash drop "$stash_ref" >/dev/null
+  else
+    die "Captured changes were stashed but could not be applied in $worktree_dir. Resolve manually with: git -C '$worktree_dir' stash apply --index $stash_ref"
+  fi
+
+  copy_local_files_to_worktree "$worktree_dir"
+
+  ensure_tmux_session "$name"
+  attach_or_switch "$name"
 }
 
 list_worktrees() {
@@ -279,9 +372,10 @@ pick_worktree() {
   local selection action name header repo script_path key selected_line
 
   require_cmd fzf
+  require_cmd gum
   log "pick_worktree begin"
   repo="$(repo_main_root)"
-  header=$'enter: open/create  |  x: remove  |  up/down: move  |  ctrl-j/ctrl-k: move  |  esc: close\n'
+  header=$'enter: open/create  |  x: delete  |  up/down: move  |  ctrl-j/ctrl-k: move  |  esc: close\n'
   header+="repo: $repo"
   script_path="$(command -v git-worktree-session 2>/dev/null || print -- "${0:A}")"
 
@@ -315,7 +409,15 @@ pick_worktree() {
 
     case "${key:-enter}:$action" in
       enter:create)
-        create_worktree "$name"
+        if has_local_changes; then
+          if confirm_capture_worktree "$name"; then
+            capture_worktree "$name"
+          else
+            create_worktree "$name"
+          fi
+        else
+          create_worktree "$name"
+        fi
         return
         ;;
       enter:open)
@@ -323,10 +425,11 @@ pick_worktree() {
         return
         ;;
       x:open)
-        remove_worktree "$name" || true
+        if confirm_remove_worktree "$name"; then
+          remove_worktree "$name"
+        fi
         ;;
       x:create)
-        log "remove_worktree ignored create row name=$name"
         ;;
       *)
         die "Unknown picker action: key=${key:-<empty>} action=${action:-<empty>}"

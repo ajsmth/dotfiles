@@ -1,4 +1,5 @@
 brew "git"
+brew "gh"
 brew "stow"
 brew "tmux"
 brew "neovim"

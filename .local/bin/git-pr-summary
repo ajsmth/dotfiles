@@ -1,0 +1,50 @@
+#!/usr/bin/env zsh
+
+set -euo pipefail
+setopt local_options no_shwordsplit
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+
+SCRIPT_DIR="$(cd "$(dirname "${(%):-%N}")" && pwd)"
+ENGINE="${SCRIPT_DIR}/git-change-summary"
+
+default_base_ref() {
+  local remote_head
+
+  if command -v gh >/dev/null 2>&1; then
+    local gh_base
+    gh_base="$(gh repo view --json defaultBranchRef -q '.defaultBranchRef.name' 2>/dev/null || true)"
+    if [[ -n "$gh_base" ]]; then
+      print -- "$gh_base"
+      return
+    fi
+  fi
+
+  remote_head="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+  if [[ -n "$remote_head" ]]; then
+    print -- "${remote_head#origin/}"
+    return
+  fi
+
+  if git rev-parse --verify --quiet refs/heads/main >/dev/null; then
+    print -- 'main'
+    return
+  fi
+
+  if git rev-parse --verify --quiet refs/heads/master >/dev/null; then
+    print -- 'master'
+    return
+  fi
+
+  print -- 'HEAD'
+}
+
+main() {
+  if [[ $# -gt 0 ]]; then
+    exec "$ENGINE" --format pr "$@"
+  fi
+
+  exec "$ENGINE" --format pr --source branch --base "$(default_base_ref)"
+}
+
+main "$@"

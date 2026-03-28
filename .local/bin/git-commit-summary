@@ -1,0 +1,27 @@
+#!/usr/bin/env zsh
+
+set -euo pipefail
+setopt local_options no_shwordsplit
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+
+SCRIPT_DIR="$(cd "$(dirname "${(%):-%N}")" && pwd)"
+ENGINE="${SCRIPT_DIR}/git-change-summary"
+
+has_staged_changes() {
+  ! git diff --cached --quiet --ignore-submodules --
+}
+
+main() {
+  if [[ $# -gt 0 ]]; then
+    exec "$ENGINE" --format commit "$@"
+  fi
+
+  if has_staged_changes; then
+    exec "$ENGINE" --format commit --source staged
+  fi
+
+  exec "$ENGINE" --format commit --source working
+}
+
+main "$@"

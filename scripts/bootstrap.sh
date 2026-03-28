@@ -177,17 +177,17 @@ verify_requirements() {
 install_linux_packages() {
   if has_cmd apt-get; then
     run_privileged apt-get update
-    run_privileged apt-get install -y stow git curl ripgrep fd-find fzf zoxide
+    run_privileged apt-get install -y stow git gh curl ripgrep fd-find fzf zoxide
     return
   fi
 
   if has_cmd dnf; then
-    run_privileged dnf install -y stow git curl ripgrep fd-find fzf zoxide
+    run_privileged dnf install -y stow git gh curl ripgrep fd-find fzf zoxide
     return
   fi
 
   if has_cmd pacman; then
-    run_privileged pacman -Syu --noconfirm stow git curl ripgrep fd fzf zoxide
+    run_privileged pacman -Syu --noconfirm stow git github-cli curl ripgrep fd fzf zoxide
     return
   fi
 
@@ -202,11 +202,11 @@ main() {
         log 'Installing packages from Brewfile.'
         if ! brew bundle --file "$DOTFILES_DIR/Brewfile"; then
           log 'brew bundle failed, falling back to minimum install.'
-          brew install stow git tmux neovim pure nvm rbenv lazygit ripgrep fd fzf zoxide bat
+          brew install stow git gh tmux neovim pure nvm rbenv lazygit ripgrep fd fzf zoxide bat
         fi
       else
         log 'Installing minimum packages via Homebrew.'
-        brew install stow git tmux neovim pure nvm rbenv lazygit ripgrep fd fzf zoxide bat
+        brew install stow git gh tmux neovim pure nvm rbenv lazygit ripgrep fd fzf zoxide bat
       fi
       install_nvm
       install_bun

@@ -1,0 +1,684 @@
+#!/usr/bin/env zsh
+
+set -euo pipefail
+setopt local_options no_shwordsplit
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  git-change-summary [options]
+
+Options:
+  --format <plain|commit|pr>       Output format. Default: plain
+  --ai                             Append AI prose analysis
+  --source <working|staged|branch|range>
+                                   Change source. Default: working
+  --base <ref>                     Base ref for --source branch
+  --range <rev1..rev2>             Revision range for --source range
+  --max-files <n>                  Max files to list. Default: 12
+  -h, --help                       Show help
+
+Examples:
+  git-change-summary --source working
+  git-change-summary --format commit --source staged
+  git-change-summary --format pr --source branch --base main
+  git-change-summary --source range --range HEAD~3..HEAD
+  git-change-summary --format pr --source branch --ai
+
+AI Configuration:
+  GIT_CHANGE_SUMMARY_BACKEND       openai|ollama
+  GIT_CHANGE_SUMMARY_MODEL         Model name to use
+  GIT_CHANGE_SUMMARY_BASE_URL      OpenAI-compatible base URL
+  GIT_CHANGE_SUMMARY_API_KEY       API key for OpenAI-compatible backends
+  GIT_CHANGE_SUMMARY_MAX_DIFF_BYTES
+                                   Max diff bytes to send. Default: 40000
+  OPENAI_API_KEY                   Fallback API key for openai backend
+  OLLAMA_HOST                      Fallback host for ollama backend
+EOF
+}
+
+die() {
+  print -u2 -- "$1"
+  exit 1
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
+}
+
+require_python() {
+  command -v python3 >/dev/null 2>&1 || die 'Missing required command: python3'
+}
+
+repo_root() {
+  git rev-parse --show-toplevel 2>/dev/null
+}
+
+current_branch() {
+  git branch --show-current 2>/dev/null || true
+}
+
+default_base_ref() {
+  local remote_head
+
+  if command -v gh >/dev/null 2>&1; then
+    local gh_base
+    gh_base="$(gh repo view --json defaultBranchRef -q '.defaultBranchRef.name' 2>/dev/null || true)"
+    if [[ -n "$gh_base" ]]; then
+      print -- "$gh_base"
+      return
+    fi
+  fi
+
+  remote_head="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+  if [[ -n "$remote_head" ]]; then
+    print -- "${remote_head#origin/}"
+    return
+  fi
+
+  if git rev-parse --verify --quiet refs/heads/main >/dev/null; then
+    print -- 'main'
+    return
+  fi
+
+  if git rev-parse --verify --quiet refs/heads/master >/dev/null; then
+    print -- 'master'
+    return
+  fi
+
+  print -- 'HEAD'
+}
+
+branch_title() {
+  local branch title
+
+  branch="${1:-}"
+  [[ -n "$branch" ]] || {
+    print -- "Update code changes"
+    return
+  }
+
+  title="${branch##*/}"
+  title="${title//[-_]/ }"
+  print -- "$title"
+}
+
+first_commit_subject() {
+  local base_ref="${1:-}"
+
+  [[ -n "$base_ref" ]] || return 0
+  git log --format='%s' "${base_ref}..HEAD" 2>/dev/null | sed -n '1p'
+}
+
+suggested_title() {
+  local source_mode="$1"
+  local base_ref="$2"
+  local range_spec="$3"
+  local title
+
+  case "$source_mode" in
+    branch)
+      title="$(first_commit_subject "$base_ref")"
+      [[ -n "$title" ]] || title="$(branch_title "$(current_branch)")"
+      ;;
+    range)
+      title="$(git log --format='%s' "$range_spec" 2>/dev/null | sed -n '1p')"
+      [[ -n "$title" ]] || title="Summarize changes for $range_spec"
+      ;;
+    staged|working)
+      title="$(branch_title "$(current_branch)")"
+      ;;
+    *)
+      title="Update code changes"
+      ;;
+  esac
+
+  print -- "$title"
+}
+
+diff_shortstat() {
+  local source_mode="$1"
+  local base_ref="$2"
+  local range_spec="$3"
+
+  case "$source_mode" in
+    working)
+      git diff --shortstat
+      ;;
+    staged)
+      git diff --cached --shortstat
+      ;;
+    branch)
+      git diff --shortstat "${base_ref}...HEAD"
+      ;;
+    range)
+      git diff --shortstat "$range_spec"
+      ;;
+  esac
+}
+
+name_status_lines() {
+  local source_mode="$1"
+  local base_ref="$2"
+  local range_spec="$3"
+
+  case "$source_mode" in
+    working)
+      git diff --name-status
+      ;;
+    staged)
+      git diff --cached --name-status
+      ;;
+    branch)
+      git diff --name-status "${base_ref}...HEAD"
+      ;;
+    range)
+      git diff --name-status "$range_spec"
+      ;;
+  esac
+}
+
+commit_subject_lines() {
+  local source_mode="$1"
+  local base_ref="$2"
+  local range_spec="$3"
+
+  case "$source_mode" in
+    branch)
+      git log --format='%s' "${base_ref}..HEAD"
+      ;;
+    range)
+      git log --format='%s' "$range_spec"
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
+source_label() {
+  local source_mode="$1"
+  local base_ref="$2"
+  local range_spec="$3"
+
+  case "$source_mode" in
+    working)
+      print -- "working tree"
+      ;;
+    staged)
+      print -- "staged changes"
+      ;;
+    branch)
+      print -- "branch vs ${base_ref}"
+      ;;
+    range)
+      print -- "range ${range_spec}"
+      ;;
+  esac
+}
+
+file_count() {
+  local name_status="$1"
+
+  if [[ -z "$name_status" ]]; then
+    print -- "0"
+    return
+  fi
+
+  print -- "$name_status" | wc -l | tr -d ' '
+}
+
+top_areas() {
+  local name_status="$1"
+
+  [[ -n "$name_status" ]] || return 0
+
+  print -- "$name_status" | awk '
+    {
+      path=$2
+      if (path == "") next
+      split(path, parts, "/")
+      area=parts[1]
+      if (area == "") area="."
+      count[area]++
+    }
+    END {
+      for (area in count) print count[area] "\t" area
+    }
+  ' | sort -rn | head -n 6 | awk -F '\t' '{print "- " $2 " (" $1 " files)"}'
+}
+
+render_files() {
+  local name_status="$1"
+  local max_files="$2"
+
+  [[ -n "$name_status" ]] || return 0
+
+  print -- "$name_status" | head -n "$max_files" | while IFS=$'\t' read -r file_status path extra; do
+    if [[ -n "$extra" ]]; then
+      print -- "- ${file_status}: ${path} -> ${extra}"
+    else
+      print -- "- ${file_status}: ${path}"
+    fi
+  done
+}
+
+render_commits() {
+  local commits="$1"
+
+  [[ -n "$commits" ]] || return 0
+  print -- "$commits" | head -n 10 | sed 's/^/- /'
+}
+
+diff_content() {
+  local source_mode="$1"
+  local base_ref="$2"
+  local range_spec="$3"
+
+  case "$source_mode" in
+    working)
+      git diff --no-ext-diff --minimal
+      ;;
+    staged)
+      git diff --cached --no-ext-diff --minimal
+      ;;
+    branch)
+      git diff --no-ext-diff --minimal "${base_ref}...HEAD"
+      ;;
+    range)
+      git diff --no-ext-diff --minimal "$range_spec"
+      ;;
+  esac
+}
+
+truncate_bytes() {
+  local limit="$1"
+
+  if [[ "$limit" -le 0 ]]; then
+    cat
+    return
+  fi
+
+  LC_ALL=C head -c "$limit"
+}
+
+default_ai_backend() {
+  if [[ -n "${GIT_CHANGE_SUMMARY_BACKEND:-}" ]]; then
+    print -- "$GIT_CHANGE_SUMMARY_BACKEND"
+    return
+  fi
+
+  if [[ -n "${OLLAMA_HOST:-}" ]]; then
+    print -- 'ollama'
+    return
+  fi
+
+  if [[ -n "${GIT_CHANGE_SUMMARY_API_KEY:-}" || -n "${OPENAI_API_KEY:-}" || -n "${GIT_CHANGE_SUMMARY_BASE_URL:-}" ]]; then
+    print -- 'openai'
+    return
+  fi
+
+  print -- 'openai'
+}
+
+default_ai_model() {
+  local backend="$1"
+
+  if [[ -n "${GIT_CHANGE_SUMMARY_MODEL:-}" ]]; then
+    print -- "$GIT_CHANGE_SUMMARY_MODEL"
+    return
+  fi
+
+  case "$backend" in
+    ollama)
+      print -- 'qwen2.5-coder:latest'
+      ;;
+    *)
+      print -- 'gpt-5-mini'
+      ;;
+  esac
+}
+
+ai_system_prompt() {
+  cat <<'EOF'
+You summarize code changes for engineers. Use only the provided context. Be concrete and concise.
+
+Return markdown with exactly these sections:
+## What Changed
+## Why It Matters
+## Risk Areas
+## Testing Notes
+
+Requirements:
+- Focus on user-visible behavior, architectural impact, or workflow impact when present.
+- If intent is unclear, say so briefly instead of guessing.
+- Mention uncertainty when the diff is insufficient.
+- Keep each section short and high signal.
+EOF
+}
+
+ai_user_prompt() {
+  local format="$1"
+  local repo="$2"
+  local label="$3"
+  local title="$4"
+  local shortstat="$5"
+  local changed_count="$6"
+  local areas="$7"
+  local files="$8"
+  local commits="$9"
+  local diff_text="${10}"
+
+  cat <<EOF
+Target format: ${format}
+Repository: ${repo}
+Change source: ${label}
+Suggested title: ${title}
+Stats: ${shortstat:-n/a}
+Files changed: ${changed_count}
+
+Main areas:
+${areas:-n/a}
+
+Key files:
+${files:-n/a}
+
+Commit subjects:
+${commits:-n/a}
+
+Diff:
+${diff_text:-n/a}
+EOF
+}
+
+openai_base_url() {
+  print -- "${GIT_CHANGE_SUMMARY_BASE_URL:-https://api.openai.com/v1}"
+}
+
+openai_api_key() {
+  print -- "${GIT_CHANGE_SUMMARY_API_KEY:-${OPENAI_API_KEY:-}}"
+}
+
+ollama_host() {
+  print -- "${GIT_CHANGE_SUMMARY_BASE_URL:-${OLLAMA_HOST:-http://127.0.0.1:11434}}"
+}
+
+run_openai_chat() {
+  local model="$1"
+  local system_prompt="$2"
+  local user_prompt="$3"
+  local base_url api_key payload response
+
+  require_cmd curl
+  require_python
+  base_url="$(openai_base_url)"
+  api_key="$(openai_api_key)"
+  [[ -n "$api_key" ]] || die 'Missing API key. Set GIT_CHANGE_SUMMARY_API_KEY or OPENAI_API_KEY.'
+
+  payload="$(SYSTEM_PROMPT="$system_prompt" USER_PROMPT="$user_prompt" MODEL_NAME="$model" python3 - <<'PY'
+import json, os
+print(json.dumps({
+    "model": os.environ["MODEL_NAME"],
+    "messages": [
+        {"role": "system", "content": os.environ["SYSTEM_PROMPT"]},
+        {"role": "user", "content": os.environ["USER_PROMPT"]},
+    ],
+}))
+PY
+)"
+
+  response="$(
+    curl -fsS \
+      -H "Authorization: Bearer ${api_key}" \
+      -H 'Content-Type: application/json' \
+      -d "$payload" \
+      "${base_url%/}/chat/completions"
+  )" || die 'OpenAI-compatible request failed.'
+
+  RESPONSE_JSON="$response" python3 - <<'PY'
+import json, os, sys
+data = json.loads(os.environ["RESPONSE_JSON"])
+choices = data.get("choices") or []
+if not choices:
+    sys.exit("No choices returned from OpenAI-compatible backend.")
+message = choices[0].get("message") or {}
+content = message.get("content")
+if isinstance(content, list):
+    text = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+else:
+    text = content or ""
+print(text.strip())
+PY
+}
+
+run_ollama_chat() {
+  local model="$1"
+  local system_prompt="$2"
+  local user_prompt="$3"
+  local host payload response
+
+  require_cmd curl
+  require_python
+  host="$(ollama_host)"
+
+  payload="$(SYSTEM_PROMPT="$system_prompt" USER_PROMPT="$user_prompt" MODEL_NAME="$model" python3 - <<'PY'
+import json, os
+print(json.dumps({
+    "model": os.environ["MODEL_NAME"],
+    "stream": False,
+    "messages": [
+        {"role": "system", "content": os.environ["SYSTEM_PROMPT"]},
+        {"role": "user", "content": os.environ["USER_PROMPT"]},
+    ],
+}))
+PY
+)"
+
+  response="$(
+    curl -fsS \
+      -H 'Content-Type: application/json' \
+      -d "$payload" \
+      "${host%/}/api/chat"
+  )" || die 'Ollama request failed.'
+
+  RESPONSE_JSON="$response" python3 - <<'PY'
+import json, os, sys
+data = json.loads(os.environ["RESPONSE_JSON"])
+message = data.get("message") or {}
+text = message.get("content") or ""
+print(text.strip())
+PY
+}
+
+run_ai_summary() {
+  local format="$1"
+  local repo="$2"
+  local label="$3"
+  local title="$4"
+  local shortstat="$5"
+  local changed_count="$6"
+  local areas="$7"
+  local files="$8"
+  local commits="$9"
+  local diff_text="${10}"
+  local backend model system_prompt user_prompt
+
+  backend="$(default_ai_backend)"
+  model="$(default_ai_model "$backend")"
+  system_prompt="$(ai_system_prompt)"
+  user_prompt="$(ai_user_prompt "$format" "$repo" "$label" "$title" "$shortstat" "$changed_count" "$areas" "$files" "$commits" "$diff_text")"
+
+  case "$backend" in
+    openai)
+      run_openai_chat "$model" "$system_prompt" "$user_prompt"
+      ;;
+    ollama)
+      run_ollama_chat "$model" "$system_prompt" "$user_prompt"
+      ;;
+    *)
+      die "Unsupported AI backend: $backend"
+      ;;
+  esac
+}
+
+main() {
+  local format='plain'
+  local ai_mode='false'
+  local source_mode='working'
+  local base_ref=''
+  local range_spec=''
+  local max_files='12'
+  local repo label title shortstat name_status commits areas files changed_count diff_text ai_text
+
+  require_cmd git
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --format)
+        [[ $# -ge 2 ]] || die 'Missing value for --format'
+        format="$2"
+        shift 2
+        ;;
+      --ai)
+        ai_mode='true'
+        shift
+        ;;
+      --source)
+        [[ $# -ge 2 ]] || die 'Missing value for --source'
+        source_mode="$2"
+        shift 2
+        ;;
+      --base)
+        [[ $# -ge 2 ]] || die 'Missing value for --base'
+        base_ref="$2"
+        shift 2
+        ;;
+      --range)
+        [[ $# -ge 2 ]] || die 'Missing value for --range'
+        range_spec="$2"
+        source_mode='range'
+        shift 2
+        ;;
+      --max-files)
+        [[ $# -ge 2 ]] || die 'Missing value for --max-files'
+        max_files="$2"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        die "Unknown argument: $1"
+        ;;
+    esac
+  done
+
+  repo_root >/dev/null || die 'Not inside a git repository'
+
+  case "$format" in
+    plain|commit|pr) ;;
+    *) die "Unsupported format: $format" ;;
+  esac
+
+  case "$source_mode" in
+    working|staged|branch|range) ;;
+    *) die "Unsupported source: $source_mode" ;;
+  esac
+
+  if [[ "$source_mode" == 'branch' && -z "$base_ref" ]]; then
+    base_ref="$(default_base_ref)"
+  fi
+
+  if [[ "$source_mode" == 'range' && -z "$range_spec" ]]; then
+    die '--source range requires --range'
+  fi
+
+  repo="$(basename "$(repo_root)")"
+  label="$(source_label "$source_mode" "$base_ref" "$range_spec")"
+  title="$(suggested_title "$source_mode" "$base_ref" "$range_spec")"
+  shortstat="$(diff_shortstat "$source_mode" "$base_ref" "$range_spec" || true)"
+  name_status="$(name_status_lines "$source_mode" "$base_ref" "$range_spec" || true)"
+  commits="$(commit_subject_lines "$source_mode" "$base_ref" "$range_spec" || true)"
+  areas="$(top_areas "$name_status" || true)"
+  files="$(render_files "$name_status" "$max_files" || true)"
+  changed_count="$(file_count "$name_status")"
+  diff_text=''
+
+  if [[ -z "$name_status" ]]; then
+    die "No changes found for ${label}."
+  fi
+
+  case "$format" in
+    plain)
+      print -- "Change Summary"
+      print -- "Repository: ${repo}"
+      print -- "Source: ${label}"
+      print -- "Title Suggestion: ${title}"
+      [[ -n "$shortstat" ]] && print -- "Stats: ${shortstat}"
+      print -- ""
+      print -- "Areas"
+      [[ -n "$areas" ]] && print -- "$areas"
+      print -- ""
+      print -- "Files (${changed_count})"
+      [[ -n "$files" ]] && print -- "$files"
+      if [[ -n "$commits" ]]; then
+        print -- ""
+        print -- "Commits"
+        print -- "$commits" | head -n 10 | sed 's/^/- /'
+      fi
+      ;;
+    commit)
+      print -- "${title}"
+      print -- ""
+      print -- "Summary:"
+      print -- "- Source: ${label}"
+      [[ -n "$shortstat" ]] && print -- "- Stats: ${shortstat}"
+      print -- "- Files changed: ${changed_count}"
+      if [[ -n "$areas" ]]; then
+        print -- "- Main areas:"
+        print -- "$areas"
+      fi
+      print -- ""
+      print -- "Files:"
+      print -- "$files"
+      ;;
+    pr)
+      print -- "## Summary"
+      print -- "- Source: ${label}"
+      [[ -n "$shortstat" ]] && print -- "- Stats: ${shortstat}"
+      print -- "- Files changed: ${changed_count}"
+      if [[ -n "$areas" ]]; then
+        print -- ""
+        print -- "## Main Areas"
+        print -- "$areas"
+      fi
+      print -- ""
+      print -- "## Key Files"
+      print -- "$files"
+      if [[ -n "$commits" ]]; then
+        print -- ""
+        print -- "## Commits"
+        print -- "$(render_commits "$commits")"
+      fi
+      print -- ""
+      print -- "## Testing"
+      print -- "- Not run"
+      ;;
+  esac
+
+  if [[ "$ai_mode" == 'true' ]]; then
+    diff_text="$(
+      diff_content "$source_mode" "$base_ref" "$range_spec" 2>/dev/null | truncate_bytes "${GIT_CHANGE_SUMMARY_MAX_DIFF_BYTES:-40000}"
+    )"
+    ai_text="$(run_ai_summary "$format" "$repo" "$label" "$title" "$shortstat" "$changed_count" "$areas" "$files" "$commits" "$diff_text")"
+    [[ -n "$ai_text" ]] || die 'AI backend returned empty output.'
+    print -- ""
+    print -- "## AI Analysis"
+    print -- "$ai_text"
+  fi
+}
+
+main "$@"
