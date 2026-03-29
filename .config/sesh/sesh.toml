@@ -1,0 +1,4 @@
+#:schema https://github.com/joshmedeski/sesh/blob/main/sesh.schema.json
+
+blacklist = ["scratch"]
+

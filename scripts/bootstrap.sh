@@ -103,6 +103,19 @@ install_bun() {
   fi
 }
 
+install_television() {
+  if has_cmd tv; then
+    return
+  fi
+
+  if has_cmd curl; then
+    log 'Installing television via official install script.'
+    curl -fsSL https://alexpasmantier.github.io/television/install.sh | bash
+  else
+    log 'curl not found; skipping television install.'
+  fi
+}
+
 install_fzf_shell_integration() {
   if has_cmd brew; then
     local fzf_install_script
@@ -202,14 +215,15 @@ main() {
         log 'Installing packages from Brewfile.'
         if ! brew bundle --file "$DOTFILES_DIR/Brewfile"; then
           log 'brew bundle failed, falling back to minimum install.'
-          brew install stow git gh tmux neovim pure nvm rbenv lazygit ripgrep fd fzf zoxide bat
+          brew install stow git gh tmux neovim pure nvm rbenv lazygit ripgrep fd fzf worktrunk television sesh zoxide bat
         fi
       else
         log 'Installing minimum packages via Homebrew.'
-        brew install stow git gh tmux neovim pure nvm rbenv lazygit ripgrep fd fzf zoxide bat
+        brew install stow git gh tmux neovim pure nvm rbenv lazygit ripgrep fd fzf worktrunk television sesh zoxide bat
       fi
       install_nvm
       install_bun
+      install_television
       install_fzf_shell_integration
       install_ghostty
       install_zsh_z
@@ -218,6 +232,7 @@ main() {
       install_linux_packages
       install_nvm
       install_bun
+      install_television
       install_fzf_shell_integration
       install_ghostty
       install_zsh_z

@@ -18,6 +18,11 @@ return {
   cmd = 'Neogit',
   opts = {
     kind = 'replace',
+    mappings = {
+      status = {
+        ['<c-p>'] = false,
+      },
+    },
   },
   keys = {
     { '<leader>gg', '<cmd>Neogit<cr>', desc = 'Show Neogit UI' },
