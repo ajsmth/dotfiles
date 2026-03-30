@@ -5,6 +5,7 @@ requirements = ["fd", "bat"]
 
 [source]
 command = "fd -t f -H -I -E .git -E .worktrees -E node_modules -E dist"
+frecency = true
 
 [preview]
 command = "bat -n --color=always '{}'"

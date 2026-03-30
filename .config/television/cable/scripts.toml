@@ -1,0 +1,51 @@
+[metadata]
+name = "commands"
+description = "Run curated local scripts from dotfiles"
+requirements = ["bat"]
+
+[source]
+command = '''
+ROOT="${DOTFILES_DIR:-$HOME/dotfiles}"
+cat <<EOF
+AI: Commit All Changes	$ROOT/.local/bin/git-commit-ai
+AI: Create Draft PR	$ROOT/.local/bin/git-pr-ai-create
+Git: Change Summary	$ROOT/.local/bin/git-change-summary
+Git: Commit Summary	$ROOT/.local/bin/git-commit-summary
+Git: PR Summary	$ROOT/.local/bin/git-pr-summary
+Files: Recent Finder	$ROOT/.local/bin/ff
+Net: Local IP	$ROOT/.local/bin/local-ip
+Setup: Bootstrap	$ROOT/scripts/bootstrap.sh
+Setup: Restow Dotfiles	$ROOT/scripts/dotfiles.sh
+Setup: Full Setup	$ROOT/scripts/setup.sh
+Terminfo: Install Ghostty	$ROOT/scripts/install-terminfo.sh
+Fonts: Install Fonts	$ROOT/scripts/install-fonts.sh
+EOF
+'''
+display = "{split:\t:0}"
+output = "{split:\t:1}"
+
+[preview]
+command = "bat -n --color=always '{}'"
+env = { BAT_THEME = "ansi" }
+
+[keybindings]
+enter = "actions:run"
+ctrl-e = "actions:edit"
+ctrl-y = "actions:copy"
+
+[actions.run]
+description = "Run the selected script"
+command = "'{}'"
+shell = "bash"
+mode = "execute"
+
+[actions.edit]
+description = "Open the selected script in editor"
+command = "${EDITOR:-vim} '{}'"
+shell = "bash"
+mode = "execute"
+
+[actions.copy]
+description = "Copy the script path"
+command = "printf '%s' '{}'"
+mode = "execute"

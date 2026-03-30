@@ -55,6 +55,61 @@ return {
       vim.cmd.cd(vim.fn.fnameescape(entries[1]))
     end
 
+    local function run_in_floating_terminal(entries)
+      if #entries == 0 then
+        return
+      end
+
+      local cmd = vim.fn.trim(entries[1])
+      if cmd == '' then
+        return
+      end
+
+      local width = math.floor(vim.o.columns * 0.85)
+      local height = math.floor(vim.o.lines * 0.8)
+      local row = math.floor((vim.o.lines - height) / 2 - 1)
+      local col = math.floor((vim.o.columns - width) / 2)
+
+      local buf = vim.api.nvim_create_buf(false, true)
+      local win = vim.api.nvim_open_win(buf, true, {
+        relative = 'editor',
+        width = width,
+        height = height,
+        row = math.max(row, 0),
+        col = math.max(col, 0),
+        style = 'minimal',
+        border = 'rounded',
+        title = ' Command ',
+        title_pos = 'center',
+      })
+
+      vim.bo[buf].bufhidden = 'wipe'
+
+      vim.fn.termopen(cmd, {
+        on_exit = function(_, code)
+          vim.schedule(function()
+            if vim.api.nvim_win_is_valid(win) then
+              vim.api.nvim_win_set_config(win, vim.tbl_extend('force', vim.api.nvim_win_get_config(win), {
+                title = code == 0 and ' Command Complete ' or (' Command Failed (' .. code .. ') '),
+              }))
+            end
+          end)
+        end,
+      })
+
+      vim.cmd.startinsert()
+      vim.keymap.set('n', 'q', function()
+        if vim.api.nvim_win_is_valid(win) then
+          vim.api.nvim_win_close(win, true)
+        end
+      end, { buffer = buf, silent = true, desc = 'Close command window' })
+      vim.keymap.set('t', '<Esc><Esc>', function()
+        if vim.api.nvim_win_is_valid(win) then
+          vim.api.nvim_win_close(win, true)
+        end
+      end, { buffer = buf, silent = true, desc = 'Close command window' })
+    end
+
     tv.setup {
       channels = {
         files = {
@@ -87,6 +142,13 @@ return {
             ['<C-q>'] = h.send_to_quickfix,
             ['<C-s>'] = h.open_in_split,
             ['<C-v>'] = h.open_in_vsplit,
+            ['<C-y>'] = h.copy_to_clipboard,
+          },
+        },
+        commands = {
+          handlers = {
+            ['<CR>'] = run_in_floating_terminal,
+            ['<C-e>'] = h.open_as_files,
             ['<C-y>'] = h.copy_to_clipboard,
           },
         },
@@ -133,5 +195,9 @@ return {
     vim.keymap.set('n', '<leader>s.', function()
       run_tv 'recent-files'
     end, { desc = '[S]earch Recent Files' })
+
+    vim.keymap.set('n', '<leader>sc', function()
+      run_tv 'commands'
+    end, { desc = '[S]earch [C]ommands' })
   end,
 }

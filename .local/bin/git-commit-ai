@@ -1,0 +1,363 @@
+#!/usr/bin/env zsh
+
+set -euo pipefail
+setopt local_options no_shwordsplit
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  git-commit-ai [options]
+
+Options:
+  --model <model>        OpenAI model to use. Default: gpt-5-mini
+  --max-diff-bytes <n>   Max diff bytes to send. Default: 40000
+  -h, --help             Show help
+
+Environment:
+  OPENAI_API_KEY         OpenAI API key
+  GIT_CHANGE_SUMMARY_API_KEY
+                         Fallback OpenAI API key
+  GIT_CHANGE_SUMMARY_BASE_URL
+                         OpenAI-compatible base URL. Default: https://api.openai.com/v1
+
+Examples:
+  git-commit-ai
+  git-commit-ai --model gpt-5
+EOF
+}
+
+die() {
+  print -u2 -- "$1"
+  exit 1
+}
+
+log() {
+  print -u2 -- "[git-commit-ai] $1"
+}
+
+preview_text() {
+  local text="${1:-}"
+  text="${text//$'\n'/\\n}"
+  text="${text//$'\r'/}"
+  print -- "${text[1,400]}"
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
+}
+
+require_python() {
+  command -v python3 >/dev/null 2>&1 || die 'Missing required command: python3'
+}
+
+repo_root() {
+  git rev-parse --show-toplevel 2>/dev/null
+}
+
+has_staged_changes() {
+  ! git diff --cached --quiet --ignore-submodules --
+}
+
+has_unstaged_changes() {
+  ! git diff --quiet --ignore-submodules --
+}
+
+openai_base_url() {
+  print -- "${GIT_CHANGE_SUMMARY_BASE_URL:-https://api.openai.com/v1}"
+}
+
+openai_api_key() {
+  print -- "${GIT_CHANGE_SUMMARY_API_KEY:-${OPENAI_API_KEY:-}}"
+}
+
+shortstat() {
+  git diff --cached --shortstat 2>/dev/null || true
+}
+
+name_status_lines() {
+  git diff --cached --name-status 2>/dev/null || true
+}
+
+render_files() {
+  local name_status="$1"
+
+  [[ -n "$name_status" ]] || return 0
+
+  print -- "$name_status" | head -n 20 | while IFS=$'\t' read -r file_status path extra; do
+    if [[ -n "$extra" ]]; then
+      print -- "- ${file_status}: ${path} -> ${extra}"
+    else
+      print -- "- ${file_status}: ${path}"
+    fi
+  done
+}
+
+diff_content() {
+  git diff --cached --no-ext-diff --minimal
+}
+
+truncate_bytes() {
+  local limit="$1"
+
+  if [[ "$limit" -le 0 ]]; then
+    cat
+    return
+  fi
+
+  LC_ALL=C head -c "$limit"
+}
+
+ai_system_prompt() {
+  cat <<'EOF'
+You write concise, high-signal git commit messages for engineers.
+
+Return valid JSON with exactly these keys:
+- subject: string
+- body: string
+
+Requirements:
+- Subject should be specific, imperative, and under 72 characters when possible.
+- Body should be plain markdown-free text suitable for a git commit body.
+- Body should be 1-3 short bullets or short paragraphs explaining what changed and why.
+- Use only the provided context and diff.
+- Do not invent testing that did not happen.
+- Keep the output concise and practical.
+EOF
+}
+
+ai_user_prompt() {
+  local repo="$1"
+  local shortstat="$2"
+  local files="$3"
+  local diff_text="$4"
+
+  cat <<EOF
+Repository: ${repo}
+Stats: ${shortstat:-n/a}
+
+Key files:
+${files:-n/a}
+
+Staged diff:
+${diff_text:-n/a}
+EOF
+}
+
+run_openai_responses() {
+  local model="$1"
+  local system_prompt="$2"
+  local user_prompt="$3"
+  local base_url api_key payload response
+
+  require_cmd curl
+  require_python
+  base_url="$(openai_base_url)"
+  api_key="$(openai_api_key)"
+  [[ -n "$api_key" ]] || die 'Missing API key. Set OPENAI_API_KEY or GIT_CHANGE_SUMMARY_API_KEY.'
+  log "Preparing OpenAI request with model=${model}"
+
+  payload="$(SYSTEM_PROMPT="$system_prompt" USER_PROMPT="$user_prompt" MODEL_NAME="$model" python3 - <<'PY'
+import json, os
+print(json.dumps({
+    "model": os.environ["MODEL_NAME"],
+    "instructions": os.environ["SYSTEM_PROMPT"],
+    "input": os.environ["USER_PROMPT"],
+    "text": {
+        "format": {
+            "type": "json_object"
+        }
+    }
+}))
+PY
+)"
+  log "Sending request to ${base_url%/}/responses"
+
+  response="$(
+    curl -fsS \
+      -H "Authorization: Bearer ${api_key}" \
+      -H 'Content-Type: application/json' \
+      -d "$payload" \
+      "${base_url%/}/responses"
+  )" || die 'OpenAI Responses request failed.'
+  log "Received response from OpenAI (${#response} bytes)"
+
+  RESPONSE_JSON="$response" python3 - <<'PY'
+import json, os, sys
+
+data = json.loads(os.environ["RESPONSE_JSON"])
+texts = []
+for item in data.get("output", []):
+    if item.get("type") != "message":
+        continue
+    for content in item.get("content", []):
+        if content.get("type") == "output_text":
+            texts.append(content.get("text", ""))
+
+text = "".join(texts).strip()
+if not text:
+    sys.exit("OpenAI Responses API returned empty output.")
+
+preview = text.replace("\n", "\\n")[:400]
+print(f"[git-commit-ai] Model text preview: {preview}", file=sys.stderr)
+
+obj = json.loads(text)
+subject = (obj.get("subject") or "").strip()
+body = (obj.get("body") or "").strip()
+
+if not subject:
+    sys.exit("Model output did not include a subject.")
+if not body:
+    print(f"[git-commit-ai] Parsed subject: {subject}", file=sys.stderr)
+    print(f"[git-commit-ai] Parsed body preview: {body[:200]}", file=sys.stderr)
+    sys.exit("Model output did not include a body.")
+
+print(json.dumps({
+    "subject": subject,
+    "body": body,
+}))
+PY
+}
+
+extract_subject() {
+  local response="$1"
+  RESPONSE_TEXT="$response" python3 - <<'PY'
+import json, os
+text = os.environ["RESPONSE_TEXT"]
+obj = json.loads(text)
+print(obj.get("subject", ""), end="")
+PY
+}
+
+extract_body() {
+  local response="$1"
+  RESPONSE_TEXT="$response" python3 - <<'PY'
+import json, os
+text = os.environ["RESPONSE_TEXT"]
+obj = json.loads(text)
+print(obj.get("body", ""), end="")
+PY
+}
+
+prompt_staging_mode() {
+  local answer
+
+  while true; do
+    print -u2 -- ''
+    print -u2 -- '[git-commit-ai] Unstaged changes detected.'
+    print -u2 -- '[git-commit-ai] Choose: [a] stage all, [s] staged only, [q] abort'
+    read -r "?Selection: " answer
+
+    case "${answer:l}" in
+      a|all)
+        print -- 'all'
+        return
+        ;;
+      s|staged)
+        print -- 'staged'
+        return
+        ;;
+      q|quit|abort)
+        print -- 'abort'
+        return
+        ;;
+      *)
+        print -u2 -- '[git-commit-ai] Invalid selection.'
+        ;;
+    esac
+  done
+}
+
+main() {
+  local model='gpt-5-mini' max_diff_bytes='40000'
+  local root repo name_status summary files diff_text ai_response subject body tmp_message staging_mode
+
+  require_cmd git
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --model)
+        [[ $# -ge 2 ]] || die 'Missing value for --model'
+        model="$2"
+        shift 2
+        ;;
+      --max-diff-bytes)
+        [[ $# -ge 2 ]] || die 'Missing value for --max-diff-bytes'
+        max_diff_bytes="$2"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        die "Unknown argument: $1"
+        ;;
+    esac
+  done
+
+  root="$(repo_root)" || die 'Not inside a git repository.'
+  repo="$(basename "$root")"
+  log "Repository: ${repo}"
+
+  if has_unstaged_changes; then
+    staging_mode="$(prompt_staging_mode)"
+    case "$staging_mode" in
+      all)
+        log 'Staging changes with git add -A'
+        git add -A
+        ;;
+      staged)
+        log 'Proceeding with already staged changes only'
+        ;;
+      abort)
+        die 'Aborted before commit.'
+        ;;
+    esac
+  elif ! has_staged_changes; then
+    log 'No unstaged changes found; staging all tracked/untracked changes'
+    git add -A
+  else
+    log 'Using existing staged changes'
+  fi
+
+  name_status="$(name_status_lines)"
+  [[ -n "$name_status" ]] || die 'No staged changes to commit.'
+  log "Collected staged file list"
+
+  summary="$(shortstat)"
+  files="$(render_files "$name_status")"
+  diff_text="$(
+    diff_content 2>/dev/null | truncate_bytes "$max_diff_bytes"
+  )"
+  log "Collected staged diff (${#diff_text} bytes after truncation)"
+
+  ai_response="$(
+    run_openai_responses \
+      "$model" \
+      "$(ai_system_prompt)" \
+      "$(ai_user_prompt "$repo" "$summary" "$files" "$diff_text")"
+  )"
+  log "Parsing AI response"
+
+  subject="$(extract_subject "$ai_response")"
+  body="$(extract_body "$ai_response")"
+  [[ -n "$subject" ]] || die 'Generated commit subject was empty.'
+  [[ -n "$body" ]] || die 'Generated commit body was empty.'
+  log "Generated subject: $(preview_text "$subject")"
+  log "Generated body preview: $(preview_text "$body")"
+
+  tmp_message="$(mktemp "${TMPDIR:-/tmp}/git-commit-ai.XXXXXX.txt")"
+  trap 'rm -f "$tmp_message"' EXIT
+  {
+    print -- "$subject"
+    print -- ""
+    print -- "$body"
+  } > "$tmp_message"
+
+  log 'Running git commit'
+  git commit -F "$tmp_message"
+}
+
+main "$@"

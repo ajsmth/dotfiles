@@ -1,0 +1,419 @@
+#!/usr/bin/env zsh
+
+set -euo pipefail
+setopt local_options no_shwordsplit
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  git-pr-ai-create [options]
+
+Options:
+  --base <ref>           Base branch/ref for the PR. Default: repo default branch
+  --model <model>        OpenAI model to use. Default: gpt-5-mini
+  --max-diff-bytes <n>   Max diff bytes to send. Default: 40000
+  -h, --help             Show help
+
+Environment:
+  OPENAI_API_KEY         OpenAI API key
+  GIT_CHANGE_SUMMARY_API_KEY
+                         Fallback OpenAI API key
+  GIT_CHANGE_SUMMARY_BASE_URL
+                         OpenAI-compatible base URL. Default: https://api.openai.com/v1
+
+Examples:
+  git-pr-ai-create
+  git-pr-ai-create --base develop
+  git-pr-ai-create --model gpt-5
+EOF
+}
+
+die() {
+  print -u2 -- "$1"
+  exit 1
+}
+
+log() {
+  print -u2 -- "[git-pr-ai-create] $1"
+}
+
+preview_text() {
+  local text="${1:-}"
+  text="${text//$'\n'/\\n}"
+  text="${text//$'\r'/}"
+  print -- "${text[1,400]}"
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
+}
+
+require_python() {
+  command -v python3 >/dev/null 2>&1 || die 'Missing required command: python3'
+}
+
+repo_root() {
+  git rev-parse --show-toplevel 2>/dev/null
+}
+
+current_branch() {
+  git branch --show-current 2>/dev/null || true
+}
+
+default_base_ref() {
+  local remote_head
+
+  if command -v gh >/dev/null 2>&1; then
+    local gh_base
+    gh_base="$(gh repo view --json defaultBranchRef -q '.defaultBranchRef.name' 2>/dev/null || true)"
+    if [[ -n "$gh_base" ]]; then
+      print -- "$gh_base"
+      return
+    fi
+  fi
+
+  remote_head="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+  if [[ -n "$remote_head" ]]; then
+    print -- "${remote_head#origin/}"
+    return
+  fi
+
+  if git rev-parse --verify --quiet refs/heads/main >/dev/null; then
+    print -- 'main'
+    return
+  fi
+
+  if git rev-parse --verify --quiet refs/heads/master >/dev/null; then
+    print -- 'master'
+    return
+  fi
+
+  print -- 'HEAD'
+}
+
+default_push_remote() {
+  local branch remote
+
+  branch="$(current_branch)"
+  remote="$(git config --get "branch.${branch}.pushRemote" 2>/dev/null || true)"
+  [[ -n "$remote" ]] || remote="$(git config --get remote.pushDefault 2>/dev/null || true)"
+  [[ -n "$remote" ]] || remote="$(git config --get "branch.${branch}.remote" 2>/dev/null || true)"
+  [[ -n "$remote" ]] || remote="$(
+    git remote | sed -n '1p'
+  )"
+  [[ -n "$remote" ]] || remote='origin'
+  print -- "$remote"
+}
+
+has_upstream() {
+  git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' >/dev/null 2>&1
+}
+
+openai_base_url() {
+  print -- "${GIT_CHANGE_SUMMARY_BASE_URL:-https://api.openai.com/v1}"
+}
+
+openai_api_key() {
+  print -- "${GIT_CHANGE_SUMMARY_API_KEY:-${OPENAI_API_KEY:-}}"
+}
+
+shortstat() {
+  local base_ref="$1"
+  git diff --shortstat "${base_ref}...HEAD" 2>/dev/null || true
+}
+
+name_status_lines() {
+  local base_ref="$1"
+  git diff --name-status "${base_ref}...HEAD" 2>/dev/null || true
+}
+
+commit_subject_lines() {
+  local base_ref="$1"
+  git log --format='%s' "${base_ref}..HEAD" 2>/dev/null || true
+}
+
+render_files() {
+  local name_status="$1"
+
+  [[ -n "$name_status" ]] || return 0
+
+  print -- "$name_status" | head -n 20 | while IFS=$'\t' read -r file_status path extra; do
+    if [[ -n "$extra" ]]; then
+      print -- "- ${file_status}: ${path} -> ${extra}"
+    else
+      print -- "- ${file_status}: ${path}"
+    fi
+  done
+}
+
+diff_content() {
+  local base_ref="$1"
+  git diff --no-ext-diff --minimal "${base_ref}...HEAD"
+}
+
+truncate_bytes() {
+  local limit="$1"
+
+  if [[ "$limit" -le 0 ]]; then
+    cat
+    return
+  fi
+
+  LC_ALL=C head -c "$limit"
+}
+
+ai_system_prompt() {
+  cat <<'EOF'
+You write concise, high-signal GitHub pull request drafts for engineers.
+
+Return valid JSON with exactly these keys:
+- title: string
+- body: string
+
+Requirements:
+- Title must be specific and under 72 characters when possible.
+- Body must be markdown suitable for a GitHub PR description.
+- Body should include these sections:
+  ## Summary
+  ## Main Changes
+  ## Testing
+- Use only the provided context and diff.
+- Do not invent testing that did not happen. If unclear, write "- Not run".
+- Keep the output concise and practical.
+EOF
+}
+
+ai_user_prompt() {
+  local repo="$1"
+  local branch="$2"
+  local base_ref="$3"
+  local shortstat="$4"
+  local files="$5"
+  local commits="$6"
+  local diff_text="$7"
+
+  cat <<EOF
+Repository: ${repo}
+Branch: ${branch}
+Base branch: ${base_ref}
+Stats: ${shortstat:-n/a}
+
+Key files:
+${files:-n/a}
+
+Commit subjects:
+${commits:-n/a}
+
+Diff:
+${diff_text:-n/a}
+EOF
+}
+
+run_openai_responses() {
+  local model="$1"
+  local system_prompt="$2"
+  local user_prompt="$3"
+  local base_url api_key payload response
+
+  require_cmd curl
+  require_python
+  base_url="$(openai_base_url)"
+  api_key="$(openai_api_key)"
+  [[ -n "$api_key" ]] || die 'Missing API key. Set OPENAI_API_KEY or GIT_CHANGE_SUMMARY_API_KEY.'
+  log "Preparing OpenAI request with model=${model}"
+
+  payload="$(SYSTEM_PROMPT="$system_prompt" USER_PROMPT="$user_prompt" MODEL_NAME="$model" python3 - <<'PY'
+import json, os
+print(json.dumps({
+    "model": os.environ["MODEL_NAME"],
+    "instructions": os.environ["SYSTEM_PROMPT"],
+    "input": os.environ["USER_PROMPT"],
+    "text": {
+        "format": {
+            "type": "json_object"
+        }
+    }
+}))
+PY
+)"
+  log "Sending request to ${base_url%/}/responses"
+
+  response="$(
+    curl -fsS \
+      -H "Authorization: Bearer ${api_key}" \
+      -H 'Content-Type: application/json' \
+      -d "$payload" \
+      "${base_url%/}/responses"
+  )" || die 'OpenAI Responses request failed.'
+  log "Received response from OpenAI (${#response} bytes)"
+
+  RESPONSE_JSON="$response" python3 - <<'PY'
+import json, os, sys
+
+data = json.loads(os.environ["RESPONSE_JSON"])
+texts = []
+for item in data.get("output", []):
+    if item.get("type") != "message":
+        continue
+    for content in item.get("content", []):
+        if content.get("type") == "output_text":
+            texts.append(content.get("text", ""))
+
+text = "".join(texts).strip()
+if not text:
+    sys.exit("OpenAI Responses API returned empty output.")
+
+preview = text.replace("\n", "\\n")[:400]
+print(f"[git-pr-ai-create] Model text preview: {preview}", file=sys.stderr)
+
+obj = json.loads(text)
+title = (obj.get("title") or "").strip()
+body = (obj.get("body") or "").strip()
+
+if not title:
+    sys.exit("Model output did not include a title.")
+if not body:
+    print(f"[git-pr-ai-create] Parsed title: {title}", file=sys.stderr)
+    print(f"[git-pr-ai-create] Parsed body preview: {body[:200]}", file=sys.stderr)
+    sys.exit("Model output did not include a body.")
+
+print(json.dumps({
+    "title": title,
+    "body": body,
+}))
+PY
+}
+
+extract_title() {
+  local response="$1"
+  RESPONSE_TEXT="$response" python3 - <<'PY'
+import json, os
+text = os.environ["RESPONSE_TEXT"]
+obj = json.loads(text)
+print(obj.get("title", ""), end="")
+PY
+}
+
+extract_body() {
+  local response="$1"
+  RESPONSE_TEXT="$response" python3 - <<'PY'
+import json, os
+text = os.environ["RESPONSE_TEXT"]
+obj = json.loads(text)
+print(obj.get("body", ""), end="")
+PY
+}
+
+push_branch() {
+  local branch="$1"
+  local remote="$2"
+
+  if has_upstream; then
+    git push
+    return
+  fi
+
+  git push -u "$remote" "$branch"
+}
+
+main() {
+  local base_ref='' model='gpt-5-mini' max_diff_bytes='40000'
+  local root repo branch remote name_status summary commits files diff_text ai_response title body tmp_body
+
+  require_cmd git
+  require_cmd gh
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --base)
+        [[ $# -ge 2 ]] || die 'Missing value for --base'
+        base_ref="$2"
+        shift 2
+        ;;
+      --model)
+        [[ $# -ge 2 ]] || die 'Missing value for --model'
+        model="$2"
+        shift 2
+        ;;
+      --max-diff-bytes)
+        [[ $# -ge 2 ]] || die 'Missing value for --max-diff-bytes'
+        max_diff_bytes="$2"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        die "Unknown argument: $1"
+        ;;
+    esac
+  done
+
+  root="$(repo_root)" || die 'Not inside a git repository.'
+  repo="$(basename "$root")"
+  branch="$(current_branch)"
+  [[ -n "$branch" ]] || die 'Could not determine current branch.'
+  log "Repository: ${repo}"
+  log "Current branch: ${branch}"
+
+  if [[ -z "$base_ref" ]]; then
+    base_ref="$(default_base_ref)"
+  fi
+  log "Base branch: ${base_ref}"
+
+  if [[ "$branch" == "$base_ref" ]]; then
+    die "Current branch matches base branch (${base_ref})."
+  fi
+
+  name_status="$(name_status_lines "$base_ref")"
+  [[ -n "$name_status" ]] || die "No changes found between ${base_ref} and ${branch}."
+  log 'Collected branch diff summary'
+
+  if gh pr view "$branch" >/dev/null 2>&1; then
+    die "A PR already exists for branch ${branch}."
+  fi
+
+  summary="$(shortstat "$base_ref")"
+  commits="$(commit_subject_lines "$base_ref")"
+  files="$(render_files "$name_status")"
+  diff_text="$(
+    diff_content "$base_ref" 2>/dev/null | truncate_bytes "$max_diff_bytes"
+  )"
+  log "Collected diff (${#diff_text} bytes after truncation)"
+
+  ai_response="$(
+    run_openai_responses \
+      "$model" \
+      "$(ai_system_prompt)" \
+      "$(ai_user_prompt "$repo" "$branch" "$base_ref" "$summary" "$files" "$commits" "$diff_text")"
+  )"
+  log 'Parsing AI response'
+
+  title="$(extract_title "$ai_response")"
+  body="$(extract_body "$ai_response")"
+  [[ -n "$title" ]] || die 'Generated PR title was empty.'
+  [[ -n "$body" ]] || die 'Generated PR body was empty.'
+  log "Generated title: $(preview_text "$title")"
+  log "Generated body preview: $(preview_text "$body")"
+
+  remote="$(default_push_remote)"
+  log "Pushing branch to remote ${remote}"
+  push_branch "$branch" "$remote"
+
+  tmp_body="$(mktemp "${TMPDIR:-/tmp}/git-pr-ai-create.XXXXXX.md")"
+  trap 'rm -f "$tmp_body"' EXIT
+  print -- "$body" > "$tmp_body"
+
+  log 'Creating draft PR with gh'
+  gh pr create \
+    --draft \
+    --base "$base_ref" \
+    --head "$branch" \
+    --title "$title" \
+    --body-file "$tmp_body"
+}
+
+main "$@"

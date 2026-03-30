@@ -8,6 +8,7 @@ command = [
   "git diff --name-only HEAD~10 HEAD 2>/dev/null || find . -type f -mtime -7 -not -path '*/.*' 2>/dev/null | head -100",
   "find . -type f -mmin -60 -not -path '*/.*' 2>/dev/null | head -100",
 ]
+frecency = true
 
 [preview]
 command = "bat -n --color=always '{}'"
