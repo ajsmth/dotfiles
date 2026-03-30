@@ -44,16 +44,19 @@ run_wt() {
 
   cmd+=("$@")
 
-  if ! "${cmd[@]}"; then
-    hold_on_error "$?"
+  if "${cmd[@]}"; then
+    return 0
   fi
+
+  hold_on_error "$?"
 }
 
 run_wt_picker() {
   local branch
 
   if ! branch="$(wt switch --no-cd "$@")"; then
-    hold_on_error "$?"
+    local status=$?
+    hold_on_error "$status"
   fi
 
   branch="$(trim_whitespace "${branch##*$'\n'}")"
@@ -77,9 +80,11 @@ resolve_worktree_path() {
 create_worktree() {
   local branch="$1"
 
-  if ! wt switch --create --no-cd "$branch"; then
-    hold_on_error "$?"
+  if wt switch --create --no-cd "$branch"; then
+    return 0
   fi
+
+  hold_on_error "$?"
 }
 
 copy_tracked_changes() {
@@ -114,9 +119,11 @@ copy_untracked_files() {
 connect_worktree() {
   local target_path="$1"
 
-  if ! sesh connect --switch "$target_path"; then
-    hold_on_error "$?"
+  if sesh connect --switch "$target_path"; then
+    return 0
   fi
+
+  hold_on_error "$?"
 }
 
 create_with_mode() {
@@ -238,9 +245,11 @@ EOF
 delete_worktree() {
   local branch="$1"
 
-  if ! wt remove --foreground "$branch"; then
-    hold_on_error "$?"
+  if wt remove --foreground "$branch"; then
+    return 0
   fi
+
+  hold_on_error "$?"
 }
 
 mode="${1:-}"

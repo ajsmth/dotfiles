@@ -28,4 +28,4 @@ mode = "execute"
 [actions.delete]
 description = "Remove the selected worktree with Worktrunk's safe defaults"
 command = "~/dotfiles/scripts/tmux-worktrunk-session.sh delete '{split:\t:0}'"
-mode = "fork"
+mode = "execute"
