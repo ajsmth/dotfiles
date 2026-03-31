@@ -9,6 +9,7 @@ ROOT="${DOTFILES_DIR:-$HOME/dotfiles}"
 cat <<EOF
 AI: Commit All Changes	$ROOT/.local/bin/git-commit-ai
 AI: Create Draft PR	$ROOT/.local/bin/git-pr-ai-create
+Worktrunk: Create Branch	$ROOT/.local/bin/wt-create-session
 Git: Change Summary	$ROOT/.local/bin/git-change-summary
 Git: Commit Summary	$ROOT/.local/bin/git-commit-summary
 Git: PR Summary	$ROOT/.local/bin/git-pr-summary

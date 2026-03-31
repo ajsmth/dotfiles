@@ -1,0 +1,36 @@
+#!/usr/bin/env zsh
+
+set -euo pipefail
+setopt local_options no_shwordsplit
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+
+die() {
+  print -u2 -- "$1"
+  exit 1
+}
+
+log() {
+  print -u2 -- "[wt-finish-session] $1"
+}
+
+main() {
+  local worktree_path="${1:-}"
+  local stash_ref="${2:-}"
+
+  [[ -n "$worktree_path" ]] || die 'Missing worktree path.'
+
+  if [[ -n "$stash_ref" ]]; then
+    log "Applying ${stash_ref} in ${worktree_path}"
+    if git -C "$worktree_path" stash apply --index "$stash_ref"; then
+      git stash drop "$stash_ref" >/dev/null 2>&1 || true
+      log 'Stash applied successfully.'
+    else
+      die "Failed to apply ${stash_ref}. The stash was kept."
+    fi
+  fi
+
+  exec sesh connect --switch "$worktree_path"
+}
+
+main "$@"

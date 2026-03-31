@@ -47,8 +47,8 @@ command = "wt switch --no-cd -x 'sesh connect --switch {{ worktree_path }}' '{sp
 mode = "execute"
 
 [actions.create]
-description = "Open Worktrunk's native picker to create or switch worktrees"
-command = "branch=\"$(wt switch --no-cd)\" && [ -n \"$branch\" ] && wt switch --no-cd -x 'sesh connect --switch {{ worktree_path }}' \"$branch\""
+description = "Create a new worktree branch with an interactive terminal prompt"
+command = "${HOME}/.local/bin/wt-create-session"
 mode = "execute"
 
 [actions.delete]
