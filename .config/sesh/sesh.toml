@@ -1,4 +1,24 @@
-#:schema https://github.com/joshmedeski/sesh/blob/main/sesh.schema.json
+#:schema https://github.com/joshmedeski/sesh/raw/main/sesh.schema.json
 
 blacklist = ["scratch"]
 
+[[wildcard]]
+pattern = "~/dev/remy-ts-worktrees/*"
+startup_command = "tmux rename-window editor && nvim"
+windows = ["web", "chef", "canvas"]
+
+[[window]]
+name = "editor"
+startup_script = "nvim"
+
+[[window]]
+name = "web"
+startup_script = "pnpm --filter @remy/web-client start"
+
+[[window]]
+name = "chef"
+startup_script = "cd apps/chef-service && pnpm start"
+
+[[window]]
+name = "canvas"
+startup_script = "canvas_port=\"$(~/.local/bin/remy-bootstrap canvas-port .)\" && pnpm --filter @remy/canvas-sync-service dev:instance --instance DevAndrew --profile remy-dev --port \"$canvas_port\""

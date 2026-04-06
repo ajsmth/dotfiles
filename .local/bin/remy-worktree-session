@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+
+REPO_ROOT="${REMY_TS_ROOT:-$HOME/dev/remy-ts}"
+WORKTREES_ROOT="${REMY_TS_WORKTREES_ROOT:-$HOME/dev/remy-ts-worktrees}"
+LOG_FILE="${REMY_WORKTREE_SESSION_LOG:-${TMPDIR:-/tmp}/remy-worktree-session.log}"
+
+log() {
+  printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"$LOG_FILE"
+}
+
+die() {
+  log "ERROR: $*"
+  printf '%s\n' "$*" >&2
+  exit 1
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
+}
+
+lower() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+picker_cmd() {
+  if [[ -n "${TMUX:-}" ]] && command -v fzf-tmux >/dev/null 2>&1 && tmux display-message -p '#S' >/dev/null 2>&1; then
+    log "picker=fzf-tmux tmux=${TMUX:-}"
+    printf 'fzf-tmux'
+    return
+  fi
+
+  log "picker=fzf tmux=${TMUX:-<none>}"
+  printf 'fzf'
+}
+
+session_state() {
+  local session_name="$1"
+
+  if tmux has-session -t "=$session_name" 2>/dev/null; then
+    printf 'tmux'
+    return
+  fi
+
+  printf 'path'
+}
+
+list_entries() {
+  local path name state
+
+  [[ -d "$WORKTREES_ROOT" ]] || return 0
+  log "listing worktrees root=$WORKTREES_ROOT"
+
+  while IFS= read -r path; do
+    [[ -n "$path" ]] || continue
+    name="$(basename "$path")"
+    state="$(session_state "$name")"
+    log "entry name=$name state=$state path=$path"
+    printf '%s\t%s\t%s\n' "$name" "$path" "$state"
+  done < <(fd -H -d 1 -t d . "$WORKTREES_ROOT" | sort)
+}
+
+current_base_ref() {
+  if git -C "$REPO_ROOT" rev-parse --verify --quiet refs/heads/main >/dev/null; then
+    printf 'main\n'
+    return
+  fi
+
+  if git -C "$REPO_ROOT" rev-parse --verify --quiet refs/heads/master >/dev/null; then
+    printf 'master\n'
+    return
+  fi
+
+  git -C "$REPO_ROOT" branch --show-current 2>/dev/null || printf 'HEAD\n'
+}
+
+sanitize_branch_input() {
+  local raw="$1"
+
+  raw="${raw#"${raw%%[![:space:]]*}"}"
+  raw="${raw%"${raw##*[![:space:]]}"}"
+  raw="${raw// /-}"
+  [[ -n "$raw" ]] || die 'Branch name cannot be empty'
+  printf '%s\n' "$raw"
+}
+
+full_branch_name() {
+  local branch_input="$1"
+
+  branch_input="$(sanitize_branch_input "$branch_input")"
+  if [[ "$branch_input" == andrew/* ]]; then
+    printf '%s\n' "$branch_input"
+    return
+  fi
+
+  printf 'andrew/%s\n' "$branch_input"
+}
+
+worktree_path_for_branch() {
+  local branch_name="$1"
+  local worktree_name
+
+  worktree_name="${branch_name//\//-}"
+  printf '%s/%s\n' "$WORKTREES_ROOT" "$worktree_name"
+}
+
+create_worktree() {
+  local branch_input="$1"
+  local branch_name worktree_path base_ref
+
+  branch_name="$(full_branch_name "$branch_input")"
+  worktree_path="$(worktree_path_for_branch "$branch_name")"
+  base_ref="$(current_base_ref)"
+
+  log "create_worktree branch=$branch_name path=$worktree_path base=$base_ref"
+  mkdir -p "$WORKTREES_ROOT"
+
+  if [[ -d "$worktree_path" ]]; then
+    printf '%s\n' "$worktree_path"
+    return 0
+  fi
+
+  if git -C "$REPO_ROOT" rev-parse --verify --quiet "refs/heads/$branch_name" >/dev/null; then
+    git -C "$REPO_ROOT" worktree add "$worktree_path" "$branch_name" >/dev/null
+  else
+    git -C "$REPO_ROOT" worktree add -b "$branch_name" "$worktree_path" "$base_ref" >/dev/null
+  fi
+
+  printf '%s\n' "$worktree_path"
+}
+
+picker_rows() {
+  local query="$1"
+  local name path state display
+
+  query="$(sanitize_branch_input "$query" 2>/dev/null || true)"
+  if [[ -n "$query" ]]; then
+    printf 'create\t%s\t+\tcreate andrew/%s\t%s\n' "$query" "$query" "$REPO_ROOT"
+  fi
+
+  while IFS=$'\t' read -r name path state; do
+    display="$name [$state]"
+    if [[ -z "$query" || "$(lower "$name")" == *"$(lower "$query")"* || "$(lower "$path")" == *"$(lower "$query")"* ]]; then
+      printf 'open\t%s\t%s\t%s\t%s\n' "$path" "$state" "$display" "$path"
+    fi
+  done < <(list_entries)
+}
+
+preview_entry() {
+  local target_path="${1:-}"
+
+  [[ -n "$target_path" ]] || exit 0
+  sesh preview "$target_path" 2>/dev/null || git -C "$target_path" status -sb 2>/dev/null || ls -la "$target_path" 2>/dev/null || true
+}
+
+resolve_selection() {
+  local selection="${1:-}"
+  local action arg
+
+  [[ -n "$selection" ]] || return 0
+  log "selection raw=${selection:-<empty>}"
+  IFS=$'\t' read -r action arg _ _ _ <<<"$selection"
+  [[ -n "$action" ]] || return 0
+  case "$action" in
+    create)
+      log "selected create arg=$arg"
+      create_worktree "$arg"
+      ;;
+    open)
+      log "selected path=$arg"
+      printf '%s\n' "$arg"
+      ;;
+    *)
+      die "Unknown action: $action"
+      ;;
+  esac
+}
+
+main() {
+  log "main argv=${*:-<none>}"
+  require_cmd fd
+  require_cmd fzf
+  require_cmd git
+  require_cmd sesh
+
+  case "${1:-pick}" in
+    pick) shift || true; die "pick is no longer used directly" ;;
+    list) shift || true; list_entries "$@" ;;
+    rows) shift || true; picker_rows "${1:-}" ;;
+    create) shift || true; create_worktree "${1:-}" ;;
+    resolve) shift || true; resolve_selection "${1:-}" ;;
+    preview) shift || true; preview_entry "${1:-}" ;;
+    *) die "Usage: remy-worktree-session [list|rows|create|resolve|preview]" ;;
+  esac
+}
+
+main "$@"

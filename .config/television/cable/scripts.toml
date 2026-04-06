@@ -1,32 +1,48 @@
 [metadata]
 name = "commands"
-description = "Run curated local scripts from dotfiles"
+description = "Run curated command-palette actions from dotfiles"
 requirements = ["bat"]
 
 [source]
 command = '''
 ROOT="${DOTFILES_DIR:-$HOME/dotfiles}"
+CWD="${PWD}"
+CLIENT="${TMUX_TARGET_CLIENT:-}"
 cat <<EOF
-AI: Commit All Changes	$ROOT/.local/bin/git-commit-ai
-AI: Create Draft PR	$ROOT/.local/bin/git-pr-ai-create
-Worktrunk: Create Branch	$ROOT/.local/bin/wt-create-session
-Git: Change Summary	$ROOT/.local/bin/git-change-summary
-Git: Commit Summary	$ROOT/.local/bin/git-commit-summary
-Git: PR Summary	$ROOT/.local/bin/git-pr-summary
-Files: Recent Finder	$ROOT/.local/bin/ff
-Net: Local IP	$ROOT/.local/bin/local-ip
-Setup: Bootstrap	$ROOT/scripts/bootstrap.sh
-Setup: Restow Dotfiles	$ROOT/scripts/dotfiles.sh
-Setup: Full Setup	$ROOT/scripts/setup.sh
-Terminfo: Install Ghostty	$ROOT/scripts/install-terminfo.sh
-Fonts: Install Fonts	$ROOT/scripts/install-fonts.sh
+AI: Commit All Changes	command	$ROOT/.local/bin/git-commit-ai	$CWD	$CLIENT
+AI: Create Draft PR	command	$ROOT/.local/bin/git-pr-ai-create	$CWD	$CLIENT
+Worktree: Switch Session	channel	worktree-sessions	$CWD	$CLIENT
+Worktree: Create Branch	command	$ROOT/.local/bin/wt-create-session	$CWD	$CLIENT
+Git: Change Summary	command	$ROOT/.local/bin/git-change-summary	$CWD	$CLIENT
+Git: Commit Summary	command	$ROOT/.local/bin/git-commit-summary	$CWD	$CLIENT
+Git: PR Summary	command	$ROOT/.local/bin/git-pr-summary	$CWD	$CLIENT
+Files: Recent Finder	command	$ROOT/.local/bin/ff	$CWD	$CLIENT
+Net: Local IP	command	$ROOT/.local/bin/local-ip	$CWD	$CLIENT
+Setup: Bootstrap	command	$ROOT/scripts/bootstrap.sh	$CWD	$CLIENT
+Setup: Restow Dotfiles	command	$ROOT/scripts/dotfiles.sh	$CWD	$CLIENT
+Setup: Full Setup	command	$ROOT/scripts/setup.sh	$CWD	$CLIENT
+Terminfo: Install Ghostty	command	$ROOT/scripts/install-terminfo.sh	$CWD	$CLIENT
+Fonts: Install Fonts	command	$ROOT/scripts/install-fonts.sh	$CWD	$CLIENT
 EOF
 '''
 display = "{split:\t:0}"
-output = "{split:\t:1}"
+output = "{}"
 
 [preview]
-command = "bat -n --color=always '{}'"
+command = '''
+bash -lc 'IFS=$'\''\t'\'' read -r label kind payload _ _ <<< "$1"
+case "$kind" in
+  command)
+    exec bat -n --color=always "$payload"
+    ;;
+  channel)
+    printf "%s\n\nOpens tv channel: %s\n" "$label" "$payload"
+    ;;
+  *)
+    printf "Unknown action kind: %s\n" "$kind"
+    ;;
+esac' _ '{}'
+'''
 env = { BAT_THEME = "ansi" }
 
 [keybindings]
@@ -35,18 +51,46 @@ ctrl-e = "actions:edit"
 ctrl-y = "actions:copy"
 
 [actions.run]
-description = "Run the selected script"
-command = "'{}'"
+description = "Run the selected command-palette action"
+command = '''
+bash -lc 'IFS=$'\''\t'\'' read -r _ kind payload cwd client <<< "$1"
+case "$kind" in
+  command|channel)
+    if [ -n "${TMUX:-}" ] && [ -n "$client" ]; then
+      ROOT="${DOTFILES_DIR:-$HOME/dotfiles}"
+      exec "$ROOT/.local/bin/tmux-dispatch-action" "$client" "$cwd" "$kind" "$payload"
+    fi
+    if [ "$kind" = "command" ]; then
+      exec "$payload"
+    fi
+    exec tv "$payload"
+    ;;
+  *)
+    printf "Unknown action kind: %s\n" "$kind" >&2
+    exit 1
+    ;;
+esac' _ '{}'
+'''
 shell = "bash"
 mode = "execute"
 
 [actions.edit]
-description = "Open the selected script in editor"
-command = "${EDITOR:-vim} '{}'"
+description = "Open the backing script in editor when available"
+command = '''
+bash -lc 'IFS=$'\''\t'\'' read -r label kind payload _ _ <<< "$1"
+if [ "$kind" != "command" ] || [ ! -f "$payload" ]; then
+  printf "No editable file for %s\n" "$label" >&2
+  exit 1
+fi
+exec "${EDITOR:-vim}" "$payload"' _ '{}'
+'''
 shell = "bash"
 mode = "execute"
 
 [actions.copy]
-description = "Copy the script path"
-command = "printf '%s' '{}'"
+description = "Copy the command path or channel name"
+command = '''
+bash -lc 'IFS=$'\''\t'\'' read -r _ _ payload _ _ <<< "$1"
+printf "%s" "$payload"' _ '{}'
+'''
 mode = "execute"

@@ -1,4 +1,5 @@
 .nvimlog
+nvim.log
 .codex/
 .claude/
 .worktrees/

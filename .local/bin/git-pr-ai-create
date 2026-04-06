@@ -14,6 +14,7 @@ Options:
   --base <ref>           Base branch/ref for the PR. Default: repo default branch
   --model <model>        OpenAI model to use. Default: gpt-5-mini
   --max-diff-bytes <n>   Max diff bytes to send. Default: 40000
+  --preview              Show generated PR content and confirm before push/create
   -h, --help             Show help
 
 Environment:
@@ -22,6 +23,11 @@ Environment:
                          Fallback OpenAI API key
   GIT_CHANGE_SUMMARY_BASE_URL
                          OpenAI-compatible base URL. Default: https://api.openai.com/v1
+
+Git Config:
+  git-pr-ai-create.require-ticket
+                         When true, require a Linear ticket in branch names.
+                         If missing, prompt for one and rename the branch.
 
 Examples:
   git-pr-ai-create
@@ -111,6 +117,119 @@ has_upstream() {
   git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' >/dev/null 2>&1
 }
 
+git_config_value() {
+  local key="$1"
+  git config --get "$key" 2>/dev/null || true
+}
+
+ticket_requirement_enabled() {
+  [[ "$(git_config_value 'git-pr-ai-create.require-ticket')" == 'true' ]]
+}
+
+branch_ticket() {
+  local branch="$1"
+  BRANCH_NAME="$branch" python3 - <<'PY'
+import os, re
+
+branch = os.environ["BRANCH_NAME"]
+match = re.search(r"(?i)(^|/)([a-z]+-\d+)(?=-|$)", branch)
+if match:
+    print(match.group(2), end="")
+PY
+}
+
+prompt_ticket() {
+  local answer
+
+  while true; do
+    print -u2 -- ''
+    print -u2 -- '[git-pr-ai-create] This repo requires a Linear ticket in the branch name.'
+    read -r "?Ticket (for example REMY-489): " answer
+    answer="${answer// /}"
+
+    if [[ -z "$answer" ]]; then
+      print -u2 -- '[git-pr-ai-create] Ticket is required.'
+      continue
+    fi
+
+    if [[ "$answer" =~ ^[A-Za-z]+-[0-9]+$ ]]; then
+      print -- "${answer:l}"
+      return 0
+    fi
+
+    print -u2 -- '[git-pr-ai-create] Ticket must look like REMY-489.'
+  done
+}
+
+branch_with_ticket() {
+  local branch="$1"
+  local ticket="$2"
+  local prefix suffix
+
+  if [[ "$branch" == */* ]]; then
+    prefix="${branch%%/*}"
+    suffix="${branch#*/}"
+    if [[ -n "$suffix" ]]; then
+      print -- "${prefix}/${ticket}-${suffix}"
+      return 0
+    fi
+  fi
+
+  print -- "${ticket}-${branch}"
+}
+
+remote_branch_exists() {
+  local remote="$1"
+  local branch="$2"
+  git ls-remote --exit-code --heads "$remote" "$branch" >/dev/null 2>&1
+}
+
+rename_branch_for_ticket() {
+  local remote="$1"
+  local old_branch="$2"
+  local new_branch="$3"
+
+  [[ "$old_branch" != "$new_branch" ]] || return 0
+
+  log "Renaming branch ${old_branch} -> ${new_branch}"
+  git branch -m "$new_branch"
+
+  if remote_branch_exists "$remote" "$old_branch"; then
+    log "Pushing renamed branch to remote ${remote}"
+    git branch --unset-upstream >/dev/null 2>&1 || true
+    git push --set-upstream "$remote" "$new_branch"
+    log "Deleting old remote branch ${remote}/${old_branch}"
+    git push "$remote" --delete "$old_branch"
+    return 0
+  fi
+
+  if has_upstream; then
+    git branch --unset-upstream >/dev/null 2>&1 || true
+  fi
+}
+
+ensure_branch_ticket() {
+  local remote="$1"
+  local branch="$2"
+  local ticket new_branch
+
+  if ! ticket_requirement_enabled; then
+    print -- "$branch"
+    return 0
+  fi
+
+  ticket="$(branch_ticket "$branch")"
+  if [[ -n "$ticket" ]]; then
+    print -- "$branch"
+    return 0
+  fi
+
+  ticket="$(prompt_ticket)"
+  new_branch="$(branch_with_ticket "$branch" "$ticket")"
+  rename_branch_for_ticket "$remote" "$branch" "$new_branch"
+  print -- "$new_branch"
+}
+
 openai_base_url() {
   print -- "${GIT_CHANGE_SUMMARY_BASE_URL:-https://api.openai.com/v1}"
 }
@@ -134,6 +253,13 @@ commit_subject_lines() {
   git log --format='%s' "${base_ref}..HEAD" 2>/dev/null || true
 }
 
+render_commit_subjects() {
+  local commits="$1"
+
+  [[ -n "$commits" ]] || return 0
+  print -- "$commits" | head -n 15
+}
+
 render_files() {
   local name_status="$1"
 
@@ -150,7 +276,7 @@ render_files() {
 
 diff_content() {
   local base_ref="$1"
-  git diff --no-ext-diff --minimal "${base_ref}...HEAD"
+  git diff --no-ext-diff --minimal --unified=1 "${base_ref}...HEAD"
 }
 
 truncate_bytes() {
@@ -173,6 +299,19 @@ Return valid JSON with exactly these keys:
 - body: string
 
 Requirements:
+- Title must use strict conventional commit format:
+  feat(scope): summary
+  fix(scope): summary
+  refactor(scope): summary
+  chore(scope): summary
+  docs(scope): summary
+  test(scope): summary
+  build(scope): summary
+  ci(scope): summary
+  perf(scope): summary
+  style(scope): summary
+- Title scope is required and should name the changed domain inferred from files/diff.
+- Only use these types: feat, fix, refactor, chore, docs, test, build, ci, perf, style.
 - Title must be specific and under 72 characters when possible.
 - Body must be markdown suitable for a GitHub PR description.
 - Body should include these sections:
@@ -195,6 +334,22 @@ ai_user_prompt() {
   local diff_text="$7"
 
   cat <<EOF
+Return a JSON object with exactly these keys:
+- title
+- body
+
+The title must be exactly one of:
+- feat(scope): summary
+- fix(scope): summary
+- refactor(scope): summary
+- chore(scope): summary
+- docs(scope): summary
+- test(scope): summary
+- build(scope): summary
+- ci(scope): summary
+- perf(scope): summary
+- style(scope): summary
+
 Repository: ${repo}
 Branch: ${branch}
 Base branch: ${base_ref}
@@ -206,12 +361,12 @@ ${files:-n/a}
 Commit subjects:
 ${commits:-n/a}
 
-Diff:
+Compact diff:
 ${diff_text:-n/a}
 EOF
 }
 
-run_openai_responses() {
+run_openai_chat() {
   local model="$1"
   local system_prompt="$2"
   local user_prompt="$3"
@@ -228,17 +383,35 @@ run_openai_responses() {
 import json, os
 print(json.dumps({
     "model": os.environ["MODEL_NAME"],
-    "instructions": os.environ["SYSTEM_PROMPT"],
-    "input": os.environ["USER_PROMPT"],
-    "text": {
-        "format": {
-            "type": "json_object"
+    "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "pull_request_draft",
+            "schema": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "title": {"type": "string"},
+                    "body": {"type": "string"}
+                },
+                "required": ["title", "body"]
+            }
         }
-    }
+    },
+    "messages": [
+        {
+            "role": "system",
+            "content": os.environ["SYSTEM_PROMPT"]
+        },
+        {
+            "role": "user",
+            "content": os.environ["USER_PROMPT"]
+        }
+    ]
 }))
 PY
 )"
-  log "Sending request to ${base_url%/}/responses"
+  log "Sending request to ${base_url%/}/chat/completions"
 
   response_file="$(mktemp "${TMPDIR:-/tmp}/git-pr-ai-create-response.XXXXXX")"
   http_status="$(
@@ -248,32 +421,24 @@ PY
       -H "Authorization: Bearer ${api_key}" \
       -H 'Content-Type: application/json' \
       -d "$payload" \
-      "${base_url%/}/responses"
-  )" || die 'OpenAI Responses request failed before receiving a response.'
+      "${base_url%/}/chat/completions"
+  )" || die 'OpenAI chat completions request failed before receiving a response.'
   response="$(cat "$response_file")"
   rm -f "$response_file"
   if [[ "$http_status" -lt 200 || "$http_status" -ge 300 ]]; then
     log "OpenAI HTTP status: ${http_status}"
     log "OpenAI error body preview: $(preview_text "$response")"
-    die 'OpenAI Responses request failed.'
+    die 'OpenAI chat completions request failed.'
   fi
   log "Received response from OpenAI (${#response} bytes)"
 
   RESPONSE_JSON="$response" python3 - <<'PY'
-import json, os, sys
+import json, os, re, sys
 
 data = json.loads(os.environ["RESPONSE_JSON"])
-texts = []
-for item in data.get("output", []):
-    if item.get("type") != "message":
-        continue
-    for content in item.get("content", []):
-        if content.get("type") == "output_text":
-            texts.append(content.get("text", ""))
-
-text = "".join(texts).strip()
+text = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
 if not text:
-    sys.exit("OpenAI Responses API returned empty output.")
+    sys.exit("OpenAI chat completions API returned empty output.")
 
 preview = text.replace("\n", "\\n")[:400]
 print(f"[git-pr-ai-create] Model text preview: {preview}", file=sys.stderr)
@@ -284,6 +449,14 @@ body = (obj.get("body") or "").strip()
 
 if not title:
     sys.exit("Model output did not include a title.")
+if not re.match(r"^(feat|fix|refactor|chore|docs|test|build|ci|perf|style)\([A-Za-z0-9._/-]+\): .+$", title):
+    sys.exit(
+        "Model output title must match strict conventional format: "
+        "feat(scope): summary | fix(scope): summary | refactor(scope): summary | "
+        "chore(scope): summary | docs(scope): summary | test(scope): summary | "
+        "build(scope): summary | ci(scope): summary | perf(scope): summary | "
+        "style(scope): summary."
+    )
 if not body:
     print(f"[git-pr-ai-create] Parsed title: {title}", file=sys.stderr)
     print(f"[git-pr-ai-create] Parsed body preview: {body[:200]}", file=sys.stderr)
@@ -328,9 +501,38 @@ push_branch() {
   git push -u "$remote" "$branch"
 }
 
+confirm_preview() {
+  local action_label="$1"
+  local answer
+
+  while true; do
+    print -u2 -- ''
+    print -u2 -- "[git-pr-ai-create] Preview generated. Continue with ${action_label}? [y/N]"
+    read -r "?Selection: " answer
+
+    case "${answer:l}" in
+      y|yes)
+        return 0
+        ;;
+      ''|n|no)
+        return 1
+        ;;
+      *)
+        print -u2 -- '[git-pr-ai-create] Invalid selection.'
+        ;;
+    esac
+  done
+}
+
+existing_pr_number() {
+  local branch="$1"
+  gh pr view "$branch" --json number -q '.number' 2>/dev/null || true
+}
+
 main() {
-  local base_ref='' model='gpt-5-mini' max_diff_bytes='40000'
+  local base_ref='' model='gpt-5-mini' max_diff_bytes='40000' preview_mode='false'
   local root repo branch remote name_status summary commits files diff_text ai_response title body
+  local pr_number action_label
   local tmp_body=''
 
   require_cmd git
@@ -353,6 +555,10 @@ main() {
         max_diff_bytes="$2"
         shift 2
         ;;
+      --preview)
+        preview_mode='true'
+        shift
+        ;;
       -h|--help)
         usage
         exit 0
@@ -367,6 +573,8 @@ main() {
   repo="$(basename "$root")"
   branch="$(current_branch)"
   [[ -n "$branch" ]] || die 'Could not determine current branch.'
+  remote="$(default_push_remote)"
+  branch="$(ensure_branch_ticket "$remote" "$branch")"
   log "Repository: ${repo}"
   log "Current branch: ${branch}"
 
@@ -382,13 +590,16 @@ main() {
   name_status="$(name_status_lines "$base_ref")"
   [[ -n "$name_status" ]] || die "No changes found between ${base_ref} and ${branch}."
   log 'Collected branch diff summary'
-
-  if gh pr view "$branch" >/dev/null 2>&1; then
-    die "A PR already exists for branch ${branch}."
+  pr_number="$(existing_pr_number "$branch")"
+  if [[ -n "$pr_number" ]]; then
+    log "Existing PR detected for branch ${branch}: #${pr_number}"
+    action_label='push and update the existing PR'
+  else
+    action_label='push and create a draft PR'
   fi
 
   summary="$(shortstat "$base_ref")"
-  commits="$(commit_subject_lines "$base_ref")"
+  commits="$(render_commit_subjects "$(commit_subject_lines "$base_ref")")"
   files="$(render_files "$name_status")"
   diff_text="$(
     diff_content "$base_ref" 2>/dev/null | truncate_bytes "$max_diff_bytes"
@@ -396,7 +607,7 @@ main() {
   log "Collected diff (${#diff_text} bytes after truncation)"
 
   ai_response="$(
-    run_openai_responses \
+    run_openai_chat \
       "$model" \
       "$(ai_system_prompt)" \
       "$(ai_user_prompt "$repo" "$branch" "$base_ref" "$summary" "$files" "$commits" "$diff_text")"
@@ -410,13 +621,30 @@ main() {
   log "Generated title: $(preview_text "$title")"
   log "Generated body preview: $(preview_text "$body")"
 
-  remote="$(default_push_remote)"
+  if [[ "$preview_mode" == 'true' ]]; then
+    print -- "Title: $title"
+    print -- ""
+    print -- "$body"
+
+    if ! confirm_preview "$action_label"; then
+      die 'Aborted before remote PR action.'
+    fi
+  fi
+
   log "Pushing branch to remote ${remote}"
   push_branch "$branch" "$remote"
 
   tmp_body="$(mktemp "${TMPDIR:-/tmp}/git-pr-ai-create.XXXXXX")"
   trap '[[ -n "${tmp_body:-}" ]] && rm -f "$tmp_body"' EXIT
   print -- "$body" > "$tmp_body"
+
+  if [[ -n "$pr_number" ]]; then
+    log "Updating PR #${pr_number} with gh"
+    gh pr edit "$pr_number" \
+      --title "$title" \
+      --body-file "$tmp_body"
+    return 0
+  fi
 
   log 'Creating draft PR with gh'
   gh pr create \

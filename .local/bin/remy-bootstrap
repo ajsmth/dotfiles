@@ -1,0 +1,426 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+export PATH="${PATH:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
+
+REMY_TS_ROOT="${REMY_TS_ROOT:-$HOME/dev/remy-ts}"
+REMY_TS_WORKTREES_ROOT="${REMY_TS_WORKTREES_ROOT:-$HOME/dev/remy-ts-worktrees}"
+PORT_MANIFEST_NAME="${PORT_MANIFEST_NAME:-.remy-sesh-ports.env}"
+STATE_DIR="${REMY_BOOTSTRAP_STATE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/remy-bootstrap}"
+REMY_GOOGLE_CLIENT_ID="${REMY_GOOGLE_CLIENT_ID:-323550473040-1a8t77cb6nk9hd6fneet42l4kig4gc0o.apps.googleusercontent.com}"
+
+die() {
+  printf '%s\n' "$*" >&2
+  exit 1
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
+}
+
+ensure_expected_node_version() {
+  local repo_root="$1"
+  local nvmrc_path="$repo_root/.nvmrc"
+  local expected_version current_version
+
+  [[ -f "$nvmrc_path" ]] || return 0
+  expected_version="$(tr -d '[:space:]' < "$nvmrc_path")"
+  [[ -n "$expected_version" ]] || return 0
+
+  require_cmd node
+  current_version="$(node -v)"
+  if [[ "$current_version" != "$expected_version" ]]; then
+    die "Node version mismatch for $repo_root: expected $expected_version from .nvmrc, got $current_version. Run 'nvm use' first."
+  fi
+}
+
+copy_if_present() {
+  local source_file="$1"
+  local target_file="$2"
+
+  [[ -f "$source_file" ]] || return 0
+  mkdir -p "$(dirname "$target_file")"
+  cp "$source_file" "$target_file"
+}
+
+normalize_path() {
+  local input_path="$1"
+
+  [[ -n "$input_path" ]] || return 1
+  if [[ -d "$input_path" ]]; then
+    (cd "$input_path" && pwd -P)
+    return
+  fi
+  if [[ -e "$input_path" ]]; then
+    (cd "${input_path%/*}" && printf '%s/%s\n' "$(pwd -P)" "${input_path##*/}")
+    return
+  fi
+  printf '%s\n' "$input_path"
+}
+
+resolve_repo_root() {
+  local input_path="$1"
+  local resolved_root=''
+
+  if [[ -d "$input_path" ]]; then
+    resolved_root="$(git -C "$input_path" rev-parse --show-toplevel 2>/dev/null || true)"
+    if [[ -n "$resolved_root" ]]; then
+      normalize_path "$resolved_root"
+      return
+    fi
+    return
+  fi
+
+  if [[ -f "$input_path" ]]; then
+    resolved_root="$(git -C "${input_path%/*}" rev-parse --show-toplevel 2>/dev/null || true)"
+    if [[ -n "$resolved_root" ]]; then
+      normalize_path "$resolved_root"
+      return
+    fi
+    return
+  fi
+
+  printf '\n'
+}
+
+is_remy_repo_root() {
+  local repo_root="$1"
+  local remy_root worktrees_root
+
+  remy_root="$(normalize_path "$REMY_TS_ROOT")"
+  worktrees_root="$(normalize_path "$REMY_TS_WORKTREES_ROOT")"
+
+  [[ -n "$repo_root" ]] || return 1
+  [[ "$repo_root" == "$remy_root" ]] && return 0
+  [[ "$repo_root" == "$worktrees_root"/* ]] && return 0
+  return 1
+}
+
+legacy_manifest_path() {
+  local repo_root="$1"
+  printf '%s/%s\n' "$repo_root" "$PORT_MANIFEST_NAME"
+}
+
+manifest_path() {
+  local repo_root="$1"
+  local repo_name repo_hash
+
+  repo_name="$(basename "$repo_root")"
+  repo_name="${repo_name//[^A-Za-z0-9._-]/-}"
+  repo_hash="$(printf '%s' "$repo_root" | cksum | awk '{print $1}')"
+  mkdir -p "$STATE_DIR"
+  printf '%s/%s-%s.env\n' "$STATE_DIR" "$repo_name" "$repo_hash"
+}
+
+port_is_free() {
+  local port="$1"
+
+  ! lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+}
+
+find_first_free_port_in_range() {
+  local start_port="$1"
+  local end_port="$2"
+  local port
+
+  for ((port = start_port; port <= end_port; port += 1)); do
+    if [[ "$port" -eq 3001 ]]; then
+      continue
+    fi
+    if port_is_free "$port"; then
+      printf '%s\n' "$port"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+find_first_free_port_from() {
+  local start_port="$1"
+  local search_count="${2:-100}"
+  local end_port=$((start_port + search_count))
+
+  find_first_free_port_in_range "$start_port" "$end_port"
+}
+
+preferred_canvas_port() {
+  if port_is_free 6523; then
+    printf '6523\n'
+    return 0
+  fi
+
+  find_first_free_port_from 6524 100
+}
+
+load_existing_manifest() {
+  local manifest="$1"
+
+  if [[ -f "$manifest" ]]; then
+    # shellcheck disable=SC1090
+    source "$manifest"
+  fi
+}
+
+write_manifest() {
+  local repo_root="$1"
+  local frontend_port="$2"
+  local chef_port="$3"
+  local canvas_port="$4"
+  local manifest legacy_manifest
+
+  manifest="$(manifest_path "$repo_root")"
+  legacy_manifest="$(legacy_manifest_path "$repo_root")"
+
+  cat >"$manifest" <<EOF
+# Managed by remy-bootstrap.
+REMY_FRONTEND_PORT=$frontend_port
+REMY_CHEF_PORT=$chef_port
+REMY_CANVAS_SYNC_PORT=$canvas_port
+EOF
+
+  if [[ -f "$legacy_manifest" ]]; then
+    rm -f "$legacy_manifest"
+  fi
+}
+
+filter_env_without_managed_keys() {
+  local file="$1"
+  local managed_comment="$2"
+  shift 2
+  local keys_csv
+
+  keys_csv="$(IFS=,; printf '%s' "$*")"
+
+  if [[ ! -f "$file" ]]; then
+    return 0
+  fi
+
+  awk -v managed_keys="$keys_csv" -v managed_comment="$managed_comment" '
+    BEGIN {
+      split(managed_keys, parts, ",");
+      for (i in parts) {
+        if (parts[i] != "") {
+          managed[parts[i]] = 1;
+        }
+      }
+      managed_header = "# " managed_comment;
+    }
+    {
+      trimmed = $0;
+      sub(/^[[:space:]]*/, "", trimmed);
+      if (trimmed == managed_header) {
+        next;
+      }
+      if (trimmed ~ /^[A-Za-z_][A-Za-z0-9_]*=/) {
+        key = trimmed;
+        sub(/=.*/, "", key);
+        if (key in managed) {
+          next;
+        }
+      }
+      print;
+    }
+  ' "$file"
+}
+
+rewrite_env_with_managed_block() {
+  local file="$1"
+  local block_title="$2"
+  shift 2
+  local tmp_filtered tmp_output
+  local -a entries=("$@")
+  local -a keys=()
+  local entry
+
+  tmp_filtered="$(mktemp)"
+  tmp_output="$(mktemp)"
+
+  for entry in "${entries[@]}"; do
+    keys+=("${entry%%=*}")
+  done
+
+  filter_env_without_managed_keys "$file" "$block_title" "${keys[@]}" >"$tmp_filtered"
+
+  {
+    cat "$tmp_filtered"
+    if [[ -s "$tmp_filtered" ]]; then
+      printf '\n'
+    fi
+    printf '# %s\n' "$block_title"
+    for entry in "${entries[@]}"; do
+      printf '%s\n' "$entry"
+    done
+  } >"$tmp_output"
+
+  mv "$tmp_output" "$file"
+  rm -f "$tmp_filtered"
+}
+
+bootstrap_repo() {
+  local repo_root="$1"
+  local source_root
+  local manifest legacy_manifest
+  local frontend_port='' chef_port='' canvas_port=''
+  local frontend_offset='' preferred_chef='' preferred_canvas=''
+  local web_client_env chef_env canvas_dev_vars
+  local source_web_client_env source_chef_env source_canvas_dev_vars
+
+  source_root="$(normalize_path "$REMY_TS_ROOT")"
+  ensure_expected_node_version "$repo_root"
+  (cd "$repo_root" && pnpm install)
+
+  manifest="$(manifest_path "$repo_root")"
+  legacy_manifest="$(legacy_manifest_path "$repo_root")"
+  load_existing_manifest "$manifest"
+  if [[ ! -f "$manifest" && -f "$legacy_manifest" ]]; then
+    load_existing_manifest "$legacy_manifest"
+  fi
+
+  if [[ -n "${REMY_FRONTEND_PORT:-}" && -n "${REMY_CHEF_PORT:-}" && -n "${REMY_CANVAS_SYNC_PORT:-}" ]]; then
+    frontend_port="$REMY_FRONTEND_PORT"
+    chef_port="$REMY_CHEF_PORT"
+    canvas_port="$REMY_CANVAS_SYNC_PORT"
+  else
+    frontend_port="$(find_first_free_port_in_range 3000 3010)" || die "No free frontend port available in localhost:3000-3010"
+    frontend_offset=$((frontend_port - 3000))
+    preferred_chef=$((8000 + frontend_offset))
+    preferred_canvas=$((6523 + frontend_offset))
+    chef_port="$(find_first_free_port_from "$preferred_chef" 100)" || die "Could not find a free chef-service port"
+    if [[ "$preferred_canvas" -le 6523 ]]; then
+      canvas_port="$(preferred_canvas_port)" || die "Could not find a free canvas-sync-service port"
+    else
+      canvas_port="$(find_first_free_port_from "$preferred_canvas" 100)" || die "Could not find a free canvas-sync-service port"
+    fi
+  fi
+
+  web_client_env="$repo_root/apps/web-client/.env.local"
+  chef_env="$repo_root/apps/chef-service/.env"
+  canvas_dev_vars="$repo_root/apps/canvas-sync-service/.dev.vars"
+  source_web_client_env="$source_root/apps/web-client/.env.local"
+  source_chef_env="$source_root/apps/chef-service/.env"
+  source_canvas_dev_vars="$source_root/apps/canvas-sync-service/.dev.vars"
+
+  if [[ "$repo_root" != "$source_root" ]]; then
+    copy_if_present "$source_web_client_env" "$web_client_env"
+    copy_if_present "$source_chef_env" "$chef_env"
+    copy_if_present "$source_canvas_dev_vars" "$canvas_dev_vars"
+  fi
+
+  if [[ -d "$repo_root/apps/web-client" ]]; then
+    rewrite_env_with_managed_block \
+      "$web_client_env" \
+      "Managed by remy-bootstrap." \
+      "VITE_AUTH_GOOGLE_CLIENT_ID=$REMY_GOOGLE_CLIENT_ID" \
+      "VITE_CHEF_API_URL=http://localhost:$chef_port" \
+      "VITE_CANVAS_SYNC_API_URL=ws://localhost:$canvas_port/api"
+  fi
+
+  if [[ -f "$chef_env" || -d "$repo_root/apps/chef-service" ]]; then
+    local canvas_sync_api_key="${INBOUND_SERVICE_API_KEY:-}"
+    if [[ -z "$canvas_sync_api_key" && -f "$chef_env" ]]; then
+      canvas_sync_api_key="$(
+        awk '
+          /^[[:space:]]*CANVAS_SYNC_API_KEY=/ {
+            line = $0
+            sub(/^[[:space:]]*CANVAS_SYNC_API_KEY=/, "", line)
+            print line
+            exit
+          }
+        ' "$chef_env"
+      )"
+    fi
+
+    rewrite_env_with_managed_block \
+      "$chef_env" \
+      "Managed by remy-bootstrap." \
+      "CORS_ALLOW_ORIGINS=*" \
+      "PORT=$chef_port" \
+      "CANVAS_SYNC_SERVICE_URL=localhost:$canvas_port" \
+      "CANVAS_SYNC_API_KEY=$canvas_sync_api_key"
+  fi
+
+  if [[ -f "$canvas_dev_vars" || -f "$source_canvas_dev_vars" || -d "$repo_root/apps/canvas-sync-service" ]]; then
+    local inbound_api_key="${INBOUND_SERVICE_API_KEY:-}"
+    if [[ -z "$inbound_api_key" && -f "$chef_env" ]]; then
+      inbound_api_key="$(
+        awk '
+          /^[[:space:]]*CANVAS_SYNC_API_KEY=/ {
+            line = $0
+            sub(/^[[:space:]]*CANVAS_SYNC_API_KEY=/, "", line)
+            print line
+            exit
+          }
+        ' "$chef_env"
+      )"
+    fi
+    if [[ -n "$inbound_api_key" ]]; then
+      rewrite_env_with_managed_block \
+        "$canvas_dev_vars" \
+        "Managed by remy-bootstrap." \
+        "INBOUND_SERVICE_API_KEY=$inbound_api_key"
+    fi
+  fi
+
+  write_manifest "$repo_root" "$frontend_port" "$chef_port" "$canvas_port"
+  printf 'Remy ports: frontend=%s chef=%s canvas=%s\n' "$frontend_port" "$chef_port" "$canvas_port"
+}
+
+print_canvas_port() {
+  local input_path="$1"
+  local repo_root=''
+  local manifest legacy_manifest
+
+  [[ -n "$input_path" ]] || die "Usage: remy-bootstrap canvas-port <path>"
+
+  repo_root="$(resolve_repo_root "$input_path")"
+  [[ -n "$repo_root" ]] || die "Could not resolve repo root from: $input_path"
+
+  manifest="$(manifest_path "$repo_root")"
+  legacy_manifest="$(legacy_manifest_path "$repo_root")"
+  load_existing_manifest "$manifest"
+  if [[ -z "${REMY_CANVAS_SYNC_PORT:-}" && -f "$legacy_manifest" ]]; then
+    load_existing_manifest "$legacy_manifest"
+  fi
+
+  [[ -n "${REMY_CANVAS_SYNC_PORT:-}" ]] || die "No remy canvas port found for: $repo_root"
+  printf '%s\n' "$REMY_CANVAS_SYNC_PORT"
+}
+
+main() {
+  local command="${1:-bootstrap}"
+  local input_path="${2:-}"
+  local repo_root
+
+  require_cmd git
+  require_cmd lsof
+  require_cmd cksum
+
+  case "$command" in
+    bootstrap)
+      [[ -n "$input_path" ]] || die "Usage: remy-bootstrap bootstrap <path>"
+      repo_root="$(resolve_repo_root "$input_path")"
+      if ! is_remy_repo_root "$repo_root"; then
+        exit 0
+      fi
+      bootstrap_repo "$repo_root"
+      ;;
+    canvas-port)
+      print_canvas_port "$input_path"
+      ;;
+    *)
+      if [[ -n "$command" && -z "$input_path" ]]; then
+        repo_root="$(resolve_repo_root "$command")"
+        if ! is_remy_repo_root "$repo_root"; then
+          exit 0
+        fi
+        bootstrap_repo "$repo_root"
+        return
+      fi
+      die "Usage: remy-bootstrap [bootstrap] <path> | remy-bootstrap canvas-port <path>"
+      ;;
+  esac
+}
+
+main "$@"

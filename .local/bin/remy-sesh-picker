@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+
+SELF="${HOME}/.local/bin/remy-sesh-picker"
+BOOTSTRAP_SCRIPT="${HOME}/.local/bin/remy-bootstrap"
+
+die() {
+  printf '%s\n' "$*" >&2
+  exit 1
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
+}
+
+entries_from_sesh() {
+  local mode="$1"
+  local -a args=(list -j)
+
+  case "$mode" in
+    all) args+=(-t -c -z) ;;
+    tmux) args+=(-t) ;;
+    config) args+=(-c) ;;
+    zoxide) args+=(-z) ;;
+    *) die "Unknown sesh mode: $mode" ;;
+  esac
+
+  sesh "${args[@]}" | jq -r '
+    .[] | [
+      (
+        if .Src == "tmux" then "🪟  " + .Name + (if .Attached == 1 then " [attached]" else "" end)
+        elif .Src == "config" then "⚙️  " + .Name
+        elif .Src == "zoxide" then "📁  " + .Name
+        else "⚡  " + .Name
+        end
+      ),
+      .Path,
+      .Src,
+      .Name
+    ] | @tsv
+  '
+}
+
+entries_from_find() {
+  fd -H -d 2 -t d -E .Trash . ~ | awk -F/ '{
+    name = $NF;
+    if (name == "") {
+      name = $0;
+    }
+    printf "🔎  %s\t%s\tfind\t%s\n", name, $0, name;
+  }'
+}
+
+show_entries() {
+  local mode="$1"
+
+  case "$mode" in
+    all|tmux|config|zoxide) entries_from_sesh "$mode" ;;
+    find) entries_from_find ;;
+    *) die "Unknown entry mode: $mode" ;;
+  esac
+}
+
+preview_path() {
+  local target_path="${1:-}"
+
+  [[ -n "$target_path" ]] || exit 0
+  sesh preview "$target_path" 2>/dev/null || ls -la "$target_path" 2>/dev/null || true
+}
+
+kill_entry() {
+  local src="${1:-}"
+  local name="${2:-}"
+
+  if [[ "$src" == "tmux" && -n "$name" ]]; then
+    tmux kill-session -t "$name"
+  fi
+}
+
+pick_entry() {
+  local selection display path src name target summary=''
+
+  selection="$(
+    show_entries all | fzf-tmux -p 80%,70% \
+      --delimiter=$'\t' \
+      --with-nth=1 \
+      --no-sort \
+      --border-label=' sesh ' \
+      --prompt='⚡  ' \
+      --header='  ^a all ^t tmux ^g configs ^x zoxide ^d tmux kill ^f find' \
+      --bind='tab:down,btab:up' \
+      --bind="ctrl-a:change-prompt(⚡  )+reload($SELF entries all)" \
+      --bind="ctrl-t:change-prompt(🪟  )+reload($SELF entries tmux)" \
+      --bind="ctrl-g:change-prompt(⚙️  )+reload($SELF entries config)" \
+      --bind="ctrl-x:change-prompt(📁  )+reload($SELF entries zoxide)" \
+      --bind="ctrl-f:change-prompt(🔎  )+reload($SELF entries find)" \
+      --bind="ctrl-d:execute-silent($SELF kill {3} {4})+change-prompt(⚡  )+reload($SELF entries all)" \
+      --preview-window='right:55%' \
+      --preview="$SELF preview {2}"
+  )" || return 0
+
+  IFS=$'\t' read -r display path src name <<<"$selection"
+  [[ -n "$path" ]] || return 0
+
+  if [[ -x "$BOOTSTRAP_SCRIPT" ]]; then
+    if ! summary="$("$BOOTSTRAP_SCRIPT" "$path" 2>&1)"; then
+      if [[ -n "${TMUX:-}" ]]; then
+        tmux display-message "Remy bootstrap failed"
+      fi
+      printf '%s\n' "$summary" >&2
+      exit 1
+    fi
+
+    if [[ -n "$summary" && -n "${TMUX:-}" ]]; then
+      tmux display-message "$summary"
+    fi
+  fi
+
+  target="$path"
+  if [[ "$src" == "tmux" ]]; then
+    target="$name"
+  fi
+
+  exec sesh connect "$target"
+}
+
+main() {
+  require_cmd fzf-tmux
+  require_cmd jq
+  require_cmd sesh
+
+  case "${1:-pick}" in
+    pick) shift; pick_entry "$@" ;;
+    entries) shift; show_entries "${1:-all}" ;;
+    preview) shift; preview_path "${1:-}" ;;
+    kill) shift; kill_entry "${1:-}" "${2:-}" ;;
+    *) die "Usage: remy-sesh-picker [pick|entries|preview|kill]" ;;
+  esac
+}
+
+main "$@"

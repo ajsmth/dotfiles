@@ -1,0 +1,460 @@
+#!/usr/bin/env zsh
+
+set -euo pipefail
+setopt local_options no_shwordsplit
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+LOG_FILE="${TMPDIR:-/tmp}/git-worktree-session.log"
+
+log() {
+  printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"$LOG_FILE"
+}
+
+usage() {
+  cat <<'EOF'
+Usage:
+  git-worktree-session            Open picker
+  git-worktree-session picker     Open picker
+  git-worktree-session create <label> [branch]
+  git-worktree-session open <label>
+
+Creates git worktrees under ../<repo>-worktrees/<branch> and uses the branch
+name you provide. Each worktree gets its own tmux session named
+wt-<repo>-<label>.
+EOF
+}
+
+die() {
+  log "ERROR: $1"
+  print -u2 -- "$1"
+  exit 1
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
+}
+
+repo_root() {
+  git rev-parse --show-toplevel 2>/dev/null
+}
+
+repo_common_dir() {
+  local common_dir root
+
+  root="$(repo_root)"
+  common_dir="$(git rev-parse --git-common-dir 2>/dev/null)" || return 1
+
+  if [[ "$common_dir" != /* ]]; then
+    common_dir="$(cd "$root" && cd "$common_dir" && pwd)"
+  fi
+
+  print -- "$common_dir"
+}
+
+repo_main_root() {
+  local common_dir=''
+
+  common_dir="$(repo_common_dir)" || return 1
+  print -- "${common_dir:h}"
+}
+
+repo_name() {
+  basename "$(repo_main_root)"
+}
+
+worktrees_dir() {
+  local root repo
+
+  root="$(repo_main_root)"
+  repo="${root:t}"
+  print -- "${root:h}/${repo}-worktrees"
+}
+
+sanitize_label() {
+  local label="$1"
+
+  [[ -n "$label" ]] || die 'Worktree label cannot be empty'
+  label="${label:l}"
+  label="${label// /-}"
+  label="${label//[^a-z0-9._-]/-}"
+  label="${label//--/-}"
+  label="${label##[-.]}"
+  label="${label%%[-.]}"
+  [[ -n "$label" ]] || die 'Worktree label must contain letters or numbers'
+  print -- "$label"
+}
+
+sanitize_branch_path() {
+  local branch="$1"
+
+  [[ -n "$branch" ]] || die 'Branch name cannot be empty'
+  print -- "${branch//\//-}"
+}
+
+worktree_path_for_branch() {
+  local branch="$1"
+
+  print -- "$(worktrees_dir)/$(sanitize_branch_path "$branch")"
+}
+
+label_file_for_path() {
+  local worktree_dir="$1"
+  local git_dir=''
+
+  git_dir="$(git -C "$worktree_dir" rev-parse --git-dir 2>/dev/null)" || return 1
+  print -- "${git_dir}/git-worktree-session-label"
+}
+
+label_for_path() {
+  local worktree_dir="$1"
+  local label_file=''
+
+  label_file="$(label_file_for_path "$worktree_dir")" || return 1
+  [[ -f "$label_file" ]] || return 1
+  sed -n '1p' "$label_file"
+}
+
+save_label_for_path() {
+  local worktree_dir="$1"
+  local label="$2"
+  local label_file=''
+
+  label_file="$(label_file_for_path "$worktree_dir")" || die "Could not resolve label file for: $worktree_dir"
+  print -- "$label" > "$label_file"
+}
+
+session_name() {
+  local repo label
+
+  repo="$(repo_name)"
+  label="$1"
+  repo="${repo//[^A-Za-z0-9._-]/-}"
+  label="${label//[^A-Za-z0-9._-]/-}"
+  print -- "${repo}/${label}"
+}
+
+legacy_session_name() {
+  local repo label
+
+  repo="$(repo_name)"
+  label="$1"
+  repo="${repo//[^A-Za-z0-9._-]/-}"
+  label="${label//[^A-Za-z0-9._-]/-}"
+  print -- "wt-${repo}-${label}"
+}
+
+current_base_ref() {
+  local ref
+
+  ref="$(git branch --show-current 2>/dev/null || true)"
+  if [[ -n "$ref" ]]; then
+    print -- "$ref"
+    return
+  fi
+
+  if git rev-parse --verify --quiet refs/heads/main >/dev/null; then
+    print -- 'main'
+    return
+  fi
+
+  if git rev-parse --verify --quiet refs/heads/master >/dev/null; then
+    print -- 'master'
+    return
+  fi
+
+  print -- 'HEAD'
+}
+
+prompt_value() {
+  local prompt="$1"
+  local default_value="${2:-}"
+  local value=''
+
+  if [[ -n "$default_value" ]]; then
+    read -r "?${prompt} [${default_value}]: " value
+    print -- "${value:-$default_value}"
+    return
+  fi
+
+  read -r "?${prompt}: " value
+  print -- "$value"
+}
+
+has_tmux_session() {
+  tmux has-session -t "=$(session_name "$1")" 2>/dev/null
+}
+
+has_legacy_tmux_session() {
+  tmux has-session -t "=$(legacy_session_name "$1")" 2>/dev/null
+}
+
+attach_or_switch() {
+  local label="$1"
+  local session=''
+
+  session="$(session_name "$label")"
+  if ! has_tmux_session "$label" && has_legacy_tmux_session "$label"; then
+    session="$(legacy_session_name "$label")"
+  fi
+  log "attach_or_switch label=$label session=$session tmux=${TMUX:-<none>}"
+
+  if [[ -n "${TMUX:-}" ]]; then
+    exec tmux switch-client -t "=$session"
+  fi
+
+  exec tmux attach-session -t "=$session"
+}
+
+ensure_tmux_session() {
+  local label worktree_dir session
+
+  label="$1"
+  worktree_dir="$2"
+  session="$(session_name "$label")"
+  log "ensure_tmux_session label=$label dir=$worktree_dir session=$session"
+
+  [[ -d "$worktree_dir" ]] || die "Worktree does not exist: $worktree_dir"
+
+  if has_tmux_session "$label" || has_legacy_tmux_session "$label"; then
+    log "tmux session already exists for label: $label"
+    return
+  fi
+
+  if ! has_tmux_session "$label"; then
+    log "creating tmux session $session"
+    tmux new-session -d -s "$session" -c "$worktree_dir"
+  fi
+}
+
+create_worktree() {
+  local label branch worktree_dir base_ref
+
+  label="$(sanitize_label "$1")"
+  branch="${2:-}"
+  if [[ -z "$branch" ]]; then
+    while [[ -z "$branch" ]]; do
+      branch="$(prompt_value 'Branch name')"
+      [[ -n "$branch" ]] || print -u2 -- 'Branch name is required.'
+    done
+  fi
+  [[ -n "$branch" ]] || die 'Branch name is required.'
+
+  worktree_dir="$(worktree_path_for_branch "$branch")"
+  base_ref="$(current_base_ref)"
+  log "create_worktree label=$label dir=$worktree_dir branch=$branch base_ref=$base_ref"
+
+  mkdir -p "$(worktrees_dir)"
+
+  if [[ -d "$worktree_dir" ]]; then
+    log "worktree already exists: $worktree_dir"
+    save_label_for_path "$worktree_dir" "$label"
+    ensure_tmux_session "$label" "$worktree_dir"
+    attach_or_switch "$label"
+  fi
+
+  if git rev-parse --verify --quiet "refs/heads/$branch" >/dev/null; then
+    log "adding existing branch worktree $branch"
+    git worktree add "$worktree_dir" "$branch"
+  else
+    log "creating branch and worktree $branch"
+    git worktree add -b "$branch" "$worktree_dir" "$base_ref"
+  fi
+
+  save_label_for_path "$worktree_dir" "$label"
+  ensure_tmux_session "$label" "$worktree_dir"
+  attach_or_switch "$label"
+}
+
+open_worktree() {
+  local label worktree_dir
+
+  label="$(sanitize_label "$1")"
+  worktree_dir="$(path_for_label "$label")"
+  [[ -n "$worktree_dir" ]] || die "No worktree found for label: $label"
+  log "open_worktree label=$label dir=$worktree_dir"
+  ensure_tmux_session "$label" "$worktree_dir"
+  attach_or_switch "$label"
+}
+
+list_worktrees() {
+  local wt_dir worktree_entry branch line label state
+
+  wt_dir="$(worktrees_dir)"
+  [[ -d "$wt_dir" ]] || return 0
+
+  worktree_entry=''
+  branch=''
+
+  while IFS= read -r line; do
+    if [[ "$line" == worktree\ * ]]; then
+      worktree_entry="${line#worktree }"
+    elif [[ "$line" == branch\ refs/heads/* ]]; then
+      branch="${line#branch refs/heads/}"
+    elif [[ -z "$line" ]]; then
+      if [[ "$worktree_entry" == "$wt_dir"/* ]]; then
+        if [[ ! -d "$worktree_entry" ]]; then
+          log "skipping missing worktree entry $worktree_entry"
+          worktree_entry=''
+          branch=''
+          continue
+        fi
+        label="$(label_for_path "$worktree_entry" 2>/dev/null || true)"
+        [[ -n "$label" ]] || label="${branch##*/}"
+        if has_tmux_session "$label"; then
+          state='live'
+        else
+          state='stopped'
+        fi
+        print -- "$state	$label	${branch:-detached}	$worktree_entry"
+      fi
+      worktree_entry=''
+      branch=''
+    fi
+  done < <(git worktree list --porcelain)
+
+  if [[ -n "$worktree_entry" && "$worktree_entry" == "$wt_dir"/* ]]; then
+    if [[ ! -d "$worktree_entry" ]]; then
+      log "skipping missing trailing worktree entry $worktree_entry"
+      return 0
+    fi
+    label="$(label_for_path "$worktree_entry" 2>/dev/null || true)"
+    [[ -n "$label" ]] || label="${branch##*/}"
+    if has_tmux_session "$label"; then
+      state='live'
+    else
+      state='stopped'
+    fi
+    print -- "$state	$label	${branch:-detached}	$worktree_entry"
+  fi
+}
+
+path_for_label() {
+  local target_label="$1"
+  local worktree_entry='' branch='' line label
+
+  while IFS= read -r line; do
+    if [[ "$line" == worktree\ * ]]; then
+      worktree_entry="${line#worktree }"
+    elif [[ "$line" == branch\ refs/heads/* ]]; then
+      branch="${line#branch refs/heads/}"
+    elif [[ -z "$line" ]]; then
+      if [[ -n "$worktree_entry" && -d "$worktree_entry" ]]; then
+        label="$(label_for_path "$worktree_entry" 2>/dev/null || true)"
+        [[ -n "$label" ]] || label="${branch##*/}"
+        if [[ "$label" == "$target_label" ]]; then
+          print -- "$worktree_entry"
+          return 0
+        fi
+      fi
+      worktree_entry=''
+      branch=''
+    fi
+  done < <(git worktree list --porcelain)
+
+  if [[ -n "$worktree_entry" && -d "$worktree_entry" ]]; then
+    label="$(label_for_path "$worktree_entry" 2>/dev/null || true)"
+    [[ -n "$label" ]] || label="${branch##*/}"
+    if [[ "$label" == "$target_label" ]]; then
+      print -- "$worktree_entry"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+picker_rows() {
+  local query line label branch display
+
+  query="${1:-}"
+
+  if [[ -n "$query" ]]; then
+    print -- "create\t$query\t+ create $query"
+  fi
+
+  while IFS= read -r line; do
+    label="$(print -- "$line" | cut -f2)"
+    branch="$(print -- "$line" | cut -f3)"
+    display="${label}  [${branch}]"
+    if [[ -z "$query" || "${label:l}" == *"${query:l}"* || "${branch:l}" == *"${query:l}"* ]]; then
+      print -- "open\t$label\t$display"
+    fi
+  done < <(list_worktrees)
+}
+
+pick_worktree() {
+  local selection action name header repo script_path
+
+  require_cmd fzf
+  log "pick_worktree begin"
+
+  repo="$(repo_main_root)"
+  header=$'enter: open/create  |  up/down: move  |  ctrl-j/ctrl-k: move  |  esc: close\n'
+  header+="repo: $repo"
+  script_path="$(command -v git-worktree-session 2>/dev/null || print -- "${0:A}")"
+
+  selection="$(
+    picker_rows "" | fzf \
+      --delimiter=$'\t' \
+      --with-nth=3 \
+      --prompt='worktree> ' \
+      --header="$header" \
+      --disabled \
+      --bind "start:reload:$script_path rows" \
+      --bind "change:reload:$script_path rows {q}" \
+      --bind 'ctrl-j:down' \
+      --bind 'ctrl-k:up' \
+      --no-preview
+  )" || {
+    log "pick_worktree fzf exited without selection"
+    exit 0
+  }
+
+  action="$(print -- "$selection" | cut -f1)"
+  name="$(print -- "$selection" | cut -f2)"
+  log "pick_worktree action=${action:-<empty>} name=${name:-<empty>}"
+
+  case "$action" in
+    create)
+      create_worktree "$name"
+      ;;
+    open)
+      open_worktree "$name"
+      ;;
+    *)
+      die "Unknown picker action: ${action:-<empty>}"
+      ;;
+  esac
+}
+
+main() {
+  require_cmd git
+  require_cmd tmux
+  log "start cwd=$PWD args=${*:-<none>}"
+  repo_root >/dev/null || die 'Not inside a git repository'
+
+  case "${1:-picker}" in
+    picker)
+      pick_worktree
+      ;;
+    create)
+      [[ $# -ge 2 && $# -le 3 ]] || die 'Usage: git-worktree-session create <label> [branch]'
+      create_worktree "$2" "${3:-}"
+      ;;
+    open)
+      [[ $# -eq 2 ]] || die 'Usage: git-worktree-session open <label>'
+      open_worktree "$2"
+      ;;
+    rows)
+      picker_rows "${2:-}"
+      ;;
+    -h|--help|help)
+      usage
+      ;;
+    *)
+      die "Unknown command: $1"
+      ;;
+  esac
+}
+
+main "$@"

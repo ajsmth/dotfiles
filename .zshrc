@@ -35,12 +35,6 @@ elif [[ -n "${NVM_BREW_PREFIX:-}" && -s "$NVM_BREW_PREFIX/etc/bash_completion.d/
   . "$NVM_BREW_PREFIX/etc/bash_completion.d/nvm"
 fi
 
-if [[ -f "$HOME/zsh-z/zsh-z.plugin.zsh" ]]; then
-  source "$HOME/zsh-z/zsh-z.plugin.zsh"
-elif command -v brew >/dev/null 2>&1; then
-  ZSH_Z_PATH="$(brew --prefix)/share/zsh-z/zsh-z.plugin.zsh"
-  [[ -f "$ZSH_Z_PATH" ]] && source "$ZSH_Z_PATH"
-fi
 
 if command -v brew >/dev/null 2>&1; then
   FZF_PREFIX="$(brew --prefix)/opt/fzf"
