@@ -2,7 +2,24 @@
 
 set -euo pipefail
 
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+ensure_path_entry() {
+  local entry="$1"
+
+  case ":${PATH:-}:" in
+    *":$entry:"*) ;;
+    *)
+      PATH="${PATH:+$PATH:}$entry"
+      ;;
+  esac
+}
+
+ensure_path_entry "/opt/homebrew/bin"
+ensure_path_entry "/usr/local/bin"
+ensure_path_entry "/usr/bin"
+ensure_path_entry "/bin"
+ensure_path_entry "/usr/sbin"
+ensure_path_entry "/sbin"
+export PATH
 
 REPO_ROOT="${REMY_TS_ROOT:-$HOME/dev/remy-ts}"
 WORKTREES_ROOT="${REMY_TS_WORKTREES_ROOT:-$HOME/dev/remy-ts-worktrees}"
@@ -45,7 +62,7 @@ session_state() {
     return
   fi
 
-  printf 'path'
+  printf 'not running'
 }
 
 list_entries() {
@@ -136,8 +153,8 @@ picker_rows() {
   local query="$1"
   local name path state display
 
-  query="$(sanitize_branch_input "$query" 2>/dev/null || true)"
   if [[ -n "$query" ]]; then
+    query="$(sanitize_branch_input "$query")"
     printf 'create\t%s\t+\tcreate andrew/%s\t%s\n' "$query" "$query" "$REPO_ROOT"
   fi
 

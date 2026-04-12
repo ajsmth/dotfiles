@@ -12,7 +12,7 @@ Usage:
 
 Options:
   --model <model>        OpenAI model to use. Default: gpt-5-mini
-  --max-diff-bytes <n>   Max diff bytes to send. Default: 40000
+  --amend                Amend the current commit instead of creating a new one
   -h, --help             Show help
 
 Environment:
@@ -24,6 +24,7 @@ Environment:
 
 Examples:
   git-commit-ai
+  git-commit-ai --amend
   git-commit-ai --model gpt-5
 EOF
 }
@@ -85,7 +86,7 @@ render_files() {
 
   [[ -n "$name_status" ]] || return 0
 
-  print -- "$name_status" | head -n 20 | while IFS=$'\t' read -r file_status path extra; do
+  print -- "$name_status" | while IFS=$'\t' read -r file_status path extra; do
     if [[ -n "$extra" ]]; then
       print -- "- ${file_status}: ${path} -> ${extra}"
     else
@@ -383,7 +384,7 @@ prompt_staging_mode() {
 }
 
 main() {
-  local model='gpt-5-mini' max_diff_bytes='40000'
+  local model='gpt-5-mini' max_diff_bytes='0' amend='false'
   local root repo name_status summary files diff_text ai_response subject body staging_mode
   local tmp_message=''
 
@@ -395,6 +396,10 @@ main() {
         [[ $# -ge 2 ]] || die 'Missing value for --model'
         model="$2"
         shift 2
+        ;;
+      --amend)
+        amend='true'
+        shift
         ;;
       --max-diff-bytes)
         [[ $# -ge 2 ]] || die 'Missing value for --max-diff-bytes'
@@ -445,7 +450,7 @@ main() {
   diff_text="$(
     diff_content 2>/dev/null | truncate_bytes "$max_diff_bytes"
   )"
-  log "Collected staged diff (${#diff_text} bytes after truncation)"
+  log "Collected staged diff (${#diff_text} bytes)"
 
   if ! ai_response="$(
     run_openai_chat \
@@ -473,8 +478,13 @@ main() {
     print -- "$body"
   } > "$tmp_message"
 
-  log 'Running git commit'
-  git commit -F "$tmp_message"
+  if [[ "$amend" == 'true' ]]; then
+    log 'Running git commit --amend'
+    git commit --amend -F "$tmp_message"
+  else
+    log 'Running git commit'
+    git commit -F "$tmp_message"
+  fi
 }
 
 main "$@"

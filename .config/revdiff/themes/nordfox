@@ -1,0 +1,28 @@
+# name: nordfox
+# description: Nightfox Nordfox palette adapted for revdiff's arctic review UI
+# author: Andrew Smith
+
+chroma-style = nordfox
+color-accent = #a3be8c
+color-border = #5d6b60
+color-normal = #cdcecf
+color-muted = #6b7280
+color-selected-fg = #cdcecf
+color-selected-bg = #465246
+color-annotation = #ebcb8b
+color-cursor-fg = #a3be8c
+color-cursor-bg = #2e3440
+color-add-fg = #b1d196
+color-add-bg = #34413c
+color-remove-fg = #d06f79
+color-remove-bg = #43363d
+color-modify-fg = #ebcb8b
+color-modify-bg = #4a4132
+color-tree-bg = #2e3440
+color-diff-bg = #2e3440
+color-status-fg = #e5e9f0
+color-status-bg = #4b5848
+color-search-fg = #232831
+color-search-bg = #ebcb8b
+color-word-add-bg = #425047
+color-word-remove-bg = #564249

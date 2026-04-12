@@ -2,21 +2,71 @@
 
 set -euo pipefail
 
-export PATH="${PATH:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
+ensure_path_entry() {
+  local entry="$1"
+
+  case ":${PATH:-}:" in
+    *":$entry:"*) ;;
+    *)
+      PATH="${PATH:+$PATH:}$entry"
+      ;;
+  esac
+}
+
+ensure_path_entry "/opt/homebrew/bin"
+ensure_path_entry "/usr/local/bin"
+ensure_path_entry "/usr/bin"
+ensure_path_entry "/bin"
+ensure_path_entry "/usr/sbin"
+ensure_path_entry "/sbin"
+export PATH
 
 REMY_TS_ROOT="${REMY_TS_ROOT:-$HOME/dev/remy-ts}"
 REMY_TS_WORKTREES_ROOT="${REMY_TS_WORKTREES_ROOT:-$HOME/dev/remy-ts-worktrees}"
 PORT_MANIFEST_NAME="${PORT_MANIFEST_NAME:-.remy-sesh-ports.env}"
 STATE_DIR="${REMY_BOOTSTRAP_STATE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/remy-bootstrap}"
 REMY_GOOGLE_CLIENT_ID="${REMY_GOOGLE_CLIENT_ID:-323550473040-1a8t77cb6nk9hd6fneet42l4kig4gc0o.apps.googleusercontent.com}"
+AWS_PROFILE="${REMY_AWS_PROFILE:-remy-dev}"
+SELF_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/$(basename -- "${BASH_SOURCE[0]}")"
 
 die() {
   printf '%s\n' "$*" >&2
   exit 1
 }
 
+log() {
+  printf '[remy-bootstrap] %s\n' "$*" >&2
+}
+
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
+}
+
+load_nvm() {
+  local nvm_dir="${NVM_DIR:-$HOME/.nvm}"
+  local nvm_brew_prefix=''
+
+  if declare -F nvm >/dev/null 2>&1; then
+    return 0
+  fi
+
+  export NVM_DIR="$nvm_dir"
+  if [[ -s "$NVM_DIR/nvm.sh" ]]; then
+    # shellcheck disable=SC1090
+    source "$NVM_DIR/nvm.sh"
+    return 0
+  fi
+
+  if command -v brew >/dev/null 2>&1; then
+    nvm_brew_prefix="$(brew --prefix nvm 2>/dev/null || true)"
+    if [[ -n "$nvm_brew_prefix" && -s "$nvm_brew_prefix/nvm.sh" ]]; then
+      # shellcheck disable=SC1090
+      source "$nvm_brew_prefix/nvm.sh"
+      return 0
+    fi
+  fi
+
+  return 1
 }
 
 ensure_expected_node_version() {
@@ -31,7 +81,16 @@ ensure_expected_node_version() {
   require_cmd node
   current_version="$(node -v)"
   if [[ "$current_version" != "$expected_version" ]]; then
-    die "Node version mismatch for $repo_root: expected $expected_version from .nvmrc, got $current_version. Run 'nvm use' first."
+    if load_nvm; then
+      log "Activating Node $expected_version via nvm"
+      if nvm use --silent "$expected_version" >/dev/null 2>&1; then
+        current_version="$(node -v)"
+      fi
+    fi
+  fi
+
+  if [[ "$current_version" != "$expected_version" ]]; then
+    die "Node version mismatch for $repo_root: expected $expected_version from .nvmrc, got $current_version from $(command -v node)."
   fi
 }
 
@@ -154,6 +213,18 @@ preferred_canvas_port() {
   find_first_free_port_from 6524 100
 }
 
+saved_ports_are_free() {
+  local frontend_port="$1"
+  local chef_port="$2"
+  local canvas_port="$3"
+
+  [[ -n "$frontend_port" && -n "$chef_port" && -n "$canvas_port" ]] || return 1
+  port_is_free "$frontend_port" || return 1
+  port_is_free "$chef_port" || return 1
+  port_is_free "$canvas_port" || return 1
+  return 0
+}
+
 load_existing_manifest() {
   local manifest="$1"
 
@@ -183,6 +254,211 @@ EOF
   if [[ -f "$legacy_manifest" ]]; then
     rm -f "$legacy_manifest"
   fi
+}
+
+aws_session_valid() {
+  aws sts get-caller-identity --profile "$AWS_PROFILE" >/dev/null 2>&1
+}
+
+ensure_aws_session() {
+  require_cmd aws
+
+  if aws_session_valid; then
+    printf 'AWS SSO session is valid for profile %s.\n' "$AWS_PROFILE"
+    return 0
+  fi
+
+  printf 'Starting AWS SSO login for profile %s...\n' "$AWS_PROFILE"
+  aws sso login --profile "$AWS_PROFILE"
+
+  if ! aws_session_valid; then
+    die "AWS SSO login did not produce a valid session for profile $AWS_PROFILE."
+  fi
+
+  printf 'AWS SSO session is ready.\n'
+}
+
+vpn_connected() {
+  ifconfig | grep -E 'inet 10\.1\.' >/dev/null 2>&1
+}
+
+ensure_vpn_connection() {
+  require_cmd ifconfig
+
+  if vpn_connected; then
+    printf 'VPN appears connected.\n'
+    return 0
+  fi
+
+  printf 'VPN is not connected.\n'
+  printf 'Open the AWS VPN Client and connect your Remy profile.\n'
+  printf 'The repo docs describe this in apps/networking/README.md.\n'
+
+  while ! vpn_connected; do
+    printf '\nPress Enter after connecting the AWS VPN Client, or Ctrl-C to cancel.'
+    read -r _
+  done
+
+  printf 'VPN connection detected.\n'
+}
+
+ensure_cloud_access() {
+  printf 'Checking AWS authentication...\n'
+  ensure_aws_session
+  printf '\nChecking VPN connectivity...\n'
+  ensure_vpn_connection
+  printf '\nCloud access preflight complete.\n\n'
+}
+
+session_name_for_path() {
+  local worktree_path="$1"
+  local session_name
+
+  session_name="$(basename "$worktree_path")"
+  session_name="${session_name//[^A-Za-z0-9._-]/-}"
+  printf '%s\n' "$session_name"
+}
+
+window_exists() {
+  local session_name="$1"
+  local window_name="$2"
+
+  tmux list-windows -t "=$session_name" -F '#W' 2>/dev/null | grep -Fxq -- "$window_name"
+}
+
+bootstrap_shell_command() {
+  local shell_path="${SHELL:-/bin/zsh}"
+
+  printf '%q -i' "$shell_path"
+}
+
+window_startup_command() {
+  local window_name="$1"
+  local command=''
+
+  case "$window_name" in
+    editor)
+      command='nvim'
+      ;;
+    llm)
+      command='codex'
+      ;;
+    web)
+      printf -v command 'if [[ -s "$HOME/.nvm/nvm.sh" ]]; then source "$HOME/.nvm/nvm.sh"; fi; nvm use --silent >/dev/null 2>&1 || true; frontend_port="$("%q" frontend-port .)" && pnpm --filter @remy/web-client start -- --port "$frontend_port"' "$SELF_PATH"
+      ;;
+    chef)
+      command='if [[ -s "$HOME/.nvm/nvm.sh" ]]; then source "$HOME/.nvm/nvm.sh"; fi; nvm use --silent >/dev/null 2>&1 || true; cd apps/chef-service && pnpm start'
+      ;;
+    canvas)
+      printf -v command 'if [[ -s "$HOME/.nvm/nvm.sh" ]]; then source "$HOME/.nvm/nvm.sh"; fi; nvm use --silent >/dev/null 2>&1 || true; canvas_port="$("%q" canvas-port .)" && pnpm --filter @remy/canvas-sync-service dev:instance --instance DevAndrew --profile %q --port "$canvas_port"' "$SELF_PATH" "$AWS_PROFILE"
+      ;;
+    *)
+      die "Unknown window: $window_name"
+      ;;
+  esac
+
+  printf '%s\n' "$command"
+}
+
+configure_window() {
+  local session_name="$1"
+  local window_name="$2"
+
+  tmux set-window-option -t "=$session_name:$window_name" automatic-rename off >/dev/null 2>&1 || true
+  tmux set-window-option -t "=$session_name:$window_name" allow-rename off >/dev/null 2>&1 || true
+}
+
+configure_service_window() {
+  local session_name="$1"
+  local window_name="$2"
+
+  configure_window "$session_name" "$window_name"
+  tmux set-window-option -t "=$session_name:$window_name" remain-on-exit on >/dev/null 2>&1 || true
+}
+
+create_window() {
+  local session_name="$1"
+  local worktree_path="$2"
+  local window_name="$3"
+  local command=''
+
+  tmux new-window -d -t "=$session_name:" -n "$window_name" -c "$worktree_path"
+  configure_window "$session_name" "$window_name"
+  case "$window_name" in
+    web|chef|canvas) configure_service_window "$session_name" "$window_name" ;;
+  esac
+
+  command="$(window_startup_command "$window_name")"
+  tmux send-keys -t "=$session_name:$window_name" "$command" C-m
+}
+
+create_window_if_missing() {
+  local session_name="$1"
+  local worktree_path="$2"
+  local window_name="$3"
+
+  if window_exists "$session_name" "$window_name"; then
+    return 0
+  fi
+
+  create_window "$session_name" "$worktree_path" "$window_name"
+}
+
+create_bootstrap_window_if_missing() {
+  local session_name="$1"
+  local worktree_path="$2"
+  local current_window_name="$3"
+  local command=''
+
+  if window_exists "$session_name" bootstrap || [[ "$current_window_name" == "bootstrap" ]]; then
+    return 0
+  fi
+
+  command="$(bootstrap_shell_command)"
+  tmux new-window -d -t "=$session_name:" -n bootstrap -c "$worktree_path" "$command"
+  configure_window "$session_name" bootstrap
+}
+
+restart_window_if_safe() {
+  local session_name="$1"
+  local worktree_path="$2"
+  local window_name="$3"
+  local current_window_name="$4"
+
+  if [[ "$current_window_name" == "$window_name" ]]; then
+    log "Skipping restart of current tmux window: $window_name"
+    return 0
+  fi
+
+  if window_exists "$session_name" "$window_name"; then
+    tmux kill-window -t "=$session_name:$window_name" >/dev/null 2>&1 || true
+  fi
+
+  create_window "$session_name" "$worktree_path" "$window_name"
+}
+
+sync_tmux_session() {
+  local repo_root="$1"
+  local current_session_name='' current_window_name=''
+
+  [[ -n "${TMUX:-}" ]] || return 0
+
+  require_cmd tmux
+  current_session_name="$(tmux display-message -p '#S' 2>/dev/null || true)"
+  current_window_name="$(tmux display-message -p '#W' 2>/dev/null || true)"
+
+  if [[ -z "$current_session_name" ]]; then
+    log "Could not resolve current tmux session; skipping tmux service sync"
+    return 0
+  fi
+
+  log "Syncing tmux windows for current session $current_session_name"
+  create_bootstrap_window_if_missing "$current_session_name" "$repo_root" "$current_window_name"
+  create_window_if_missing "$current_session_name" "$repo_root" editor
+  create_window_if_missing "$current_session_name" "$repo_root" llm
+  restart_window_if_safe "$current_session_name" "$repo_root" web "$current_window_name"
+  restart_window_if_safe "$current_session_name" "$repo_root" chef "$current_window_name"
+  restart_window_if_safe "$current_session_name" "$repo_root" canvas "$current_window_name"
 }
 
 filter_env_without_managed_keys() {
@@ -268,8 +544,11 @@ bootstrap_repo() {
   local source_web_client_env source_chef_env source_canvas_dev_vars
 
   source_root="$(normalize_path "$REMY_TS_ROOT")"
+  log "Bootstrapping repo: $repo_root"
   ensure_expected_node_version "$repo_root"
+  log "Running pnpm install"
   (cd "$repo_root" && pnpm install)
+  log "Finished pnpm install"
 
   manifest="$(manifest_path "$repo_root")"
   legacy_manifest="$(legacy_manifest_path "$repo_root")"
@@ -278,11 +557,17 @@ bootstrap_repo() {
     load_existing_manifest "$legacy_manifest"
   fi
 
-  if [[ -n "${REMY_FRONTEND_PORT:-}" && -n "${REMY_CHEF_PORT:-}" && -n "${REMY_CANVAS_SYNC_PORT:-}" ]]; then
+  if saved_ports_are_free "${REMY_FRONTEND_PORT:-}" "${REMY_CHEF_PORT:-}" "${REMY_CANVAS_SYNC_PORT:-}"; then
+    log "Reusing existing port manifest"
     frontend_port="$REMY_FRONTEND_PORT"
     chef_port="$REMY_CHEF_PORT"
     canvas_port="$REMY_CANVAS_SYNC_PORT"
   else
+    if [[ -n "${REMY_FRONTEND_PORT:-}" || -n "${REMY_CHEF_PORT:-}" || -n "${REMY_CANVAS_SYNC_PORT:-}" ]]; then
+      log "Stored ports are unavailable; reallocating"
+    else
+      log "Allocating fresh ports"
+    fi
     frontend_port="$(find_first_free_port_in_range 3000 3010)" || die "No free frontend port available in localhost:3000-3010"
     frontend_offset=$((frontend_port - 3000))
     preferred_chef=$((8000 + frontend_offset))
@@ -295,6 +580,8 @@ bootstrap_repo() {
     fi
   fi
 
+  log "Using ports: frontend=$frontend_port chef=$chef_port canvas=$canvas_port"
+
   web_client_env="$repo_root/apps/web-client/.env.local"
   chef_env="$repo_root/apps/chef-service/.env"
   canvas_dev_vars="$repo_root/apps/canvas-sync-service/.dev.vars"
@@ -303,12 +590,14 @@ bootstrap_repo() {
   source_canvas_dev_vars="$source_root/apps/canvas-sync-service/.dev.vars"
 
   if [[ "$repo_root" != "$source_root" ]]; then
+    log "Syncing base env files from $source_root"
     copy_if_present "$source_web_client_env" "$web_client_env"
     copy_if_present "$source_chef_env" "$chef_env"
     copy_if_present "$source_canvas_dev_vars" "$canvas_dev_vars"
   fi
 
   if [[ -d "$repo_root/apps/web-client" ]]; then
+    log "Updating web-client env"
     rewrite_env_with_managed_block \
       "$web_client_env" \
       "Managed by remy-bootstrap." \
@@ -332,6 +621,7 @@ bootstrap_repo() {
       )"
     fi
 
+    log "Updating chef-service env"
     rewrite_env_with_managed_block \
       "$chef_env" \
       "Managed by remy-bootstrap." \
@@ -356,6 +646,7 @@ bootstrap_repo() {
       )"
     fi
     if [[ -n "$inbound_api_key" ]]; then
+      log "Updating canvas-sync-service env"
       rewrite_env_with_managed_block \
         "$canvas_dev_vars" \
         "Managed by remy-bootstrap." \
@@ -364,6 +655,7 @@ bootstrap_repo() {
   fi
 
   write_manifest "$repo_root" "$frontend_port" "$chef_port" "$canvas_port"
+  log "Saved port manifest: $manifest"
   printf 'Remy ports: frontend=%s chef=%s canvas=%s\n' "$frontend_port" "$chef_port" "$canvas_port"
 }
 
@@ -388,6 +680,27 @@ print_canvas_port() {
   printf '%s\n' "$REMY_CANVAS_SYNC_PORT"
 }
 
+print_frontend_port() {
+  local input_path="$1"
+  local repo_root=''
+  local manifest legacy_manifest
+
+  [[ -n "$input_path" ]] || die "Usage: remy-bootstrap frontend-port <path>"
+
+  repo_root="$(resolve_repo_root "$input_path")"
+  [[ -n "$repo_root" ]] || die "Could not resolve repo root from: $input_path"
+
+  manifest="$(manifest_path "$repo_root")"
+  legacy_manifest="$(legacy_manifest_path "$repo_root")"
+  load_existing_manifest "$manifest"
+  if [[ -z "${REMY_FRONTEND_PORT:-}" && -f "$legacy_manifest" ]]; then
+    load_existing_manifest "$legacy_manifest"
+  fi
+
+  [[ -n "${REMY_FRONTEND_PORT:-}" ]] || die "No remy frontend port found for: $repo_root"
+  printf '%s\n' "$REMY_FRONTEND_PORT"
+}
+
 main() {
   local command="${1:-bootstrap}"
   local input_path="${2:-}"
@@ -401,24 +714,35 @@ main() {
     bootstrap)
       [[ -n "$input_path" ]] || die "Usage: remy-bootstrap bootstrap <path>"
       repo_root="$(resolve_repo_root "$input_path")"
+      log "Resolved repo root: ${repo_root:-<none>}"
       if ! is_remy_repo_root "$repo_root"; then
+        log "Skipping non-Remy repo"
         exit 0
       fi
       bootstrap_repo "$repo_root"
+      ensure_cloud_access
+      sync_tmux_session "$repo_root"
       ;;
     canvas-port)
       print_canvas_port "$input_path"
       ;;
+    frontend-port)
+      print_frontend_port "$input_path"
+      ;;
     *)
       if [[ -n "$command" && -z "$input_path" ]]; then
         repo_root="$(resolve_repo_root "$command")"
+        log "Resolved repo root: ${repo_root:-<none>}"
         if ! is_remy_repo_root "$repo_root"; then
+          log "Skipping non-Remy repo"
           exit 0
         fi
         bootstrap_repo "$repo_root"
+        ensure_cloud_access
+        sync_tmux_session "$repo_root"
         return
       fi
-      die "Usage: remy-bootstrap [bootstrap] <path> | remy-bootstrap canvas-port <path>"
+      die "Usage: remy-bootstrap [bootstrap] <path> | remy-bootstrap canvas-port <path> | remy-bootstrap frontend-port <path>"
       ;;
   esac
 }

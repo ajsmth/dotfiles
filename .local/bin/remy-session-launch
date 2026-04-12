@@ -1,0 +1,429 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ensure_path_entry() {
+  local entry="$1"
+
+  case ":${PATH:-}:" in
+    *":$entry:"*) ;;
+    *)
+      PATH="${PATH:+$PATH:}$entry"
+      ;;
+  esac
+}
+
+ensure_path_entry "/opt/homebrew/bin"
+ensure_path_entry "/usr/local/bin"
+ensure_path_entry "/usr/bin"
+ensure_path_entry "/bin"
+ensure_path_entry "/usr/sbin"
+ensure_path_entry "/sbin"
+export PATH
+
+REMY_TS_WORKTREES_ROOT="${REMY_TS_WORKTREES_ROOT:-$HOME/dev/remy-ts-worktrees}"
+BOOTSTRAP_SCRIPT="${HOME}/.local/bin/remy-bootstrap"
+WORKTREE_SCRIPT="${HOME}/.local/bin/remy-worktree-session"
+AWS_PROFILE="${REMY_AWS_PROFILE:-remy-dev}"
+SELF_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/$(basename -- "${BASH_SOURCE[0]}")"
+PICKED_WORKTREE_PATH=''
+
+die() {
+  printf '%s\n' "$*" >&2
+  show_error_and_exit "$*"
+  exit 1
+}
+
+log() {
+  printf '[remy-session-launch] %s\n' "$*" >&2
+}
+
+tmux_notice() {
+  [[ -n "${TMUX:-}" ]] || return 0
+  tmux display-message "$*" >/dev/null 2>&1 || true
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
+}
+
+normalize_path() {
+  local input_path="$1"
+
+  [[ -d "$input_path" ]] || die "Path does not exist: $input_path"
+  (cd "$input_path" && pwd -P)
+}
+
+show_error_and_exit() {
+  local message="$1"
+  local popup_cmd=''
+
+  if [[ -n "${TMUX:-}" ]] && ! [[ -t 0 && -t 1 ]]; then
+    popup_cmd="$(printf "printf '%%s\\n\\nPress Enter to close...' %q; read -r _" "$message")"
+    tmux display-popup -E -w 80% -h 40% "zsh -lc $(printf %q "$popup_cmd")" >/dev/null 2>&1 || true
+    return
+  fi
+
+  if [[ -t 0 && -t 1 ]]; then
+    printf 'Press Enter to close...' >&2
+    read -r _ || true
+  fi
+}
+
+picker_cmd() {
+  if [[ -n "${TMUX:-}" ]] && command -v fzf-tmux >/dev/null 2>&1; then
+    printf 'fzf-tmux -p 80%%,70%%'
+    return
+  fi
+
+  printf 'fzf'
+}
+
+session_name_for_path() {
+  local worktree_path="$1"
+  local session_name
+
+  session_name="$(basename "$worktree_path")"
+  session_name="${session_name//[^A-Za-z0-9._-]/-}"
+  printf '%s\n' "$session_name"
+}
+
+has_tmux_session() {
+  local session_name="$1"
+
+  tmux has-session -t "=$session_name" 2>/dev/null
+}
+
+attach_or_switch_session() {
+  local session_name="$1"
+
+  if [[ -n "${TMUX:-}" ]]; then
+    exec tmux switch-client -t "=$session_name"
+  fi
+
+  exec tmux attach-session -t "=$session_name"
+}
+
+window_exists() {
+  local session_name="$1"
+  local window_name="$2"
+
+  tmux list-windows -t "=$session_name" -F '#W' 2>/dev/null | grep -Fxq -- "$window_name"
+}
+
+bootstrap_shell_command() {
+  local shell_path="${SHELL:-/bin/zsh}"
+
+  printf '%q -i' "$shell_path"
+}
+
+window_startup_command() {
+  local window_name="$1"
+  local command=''
+
+  case "$window_name" in
+    editor)
+      command='nvim'
+      ;;
+    llm)
+      command='codex'
+      ;;
+    web)
+      printf -v command 'if [[ -s "$HOME/.nvm/nvm.sh" ]]; then source "$HOME/.nvm/nvm.sh"; fi; nvm use --silent >/dev/null 2>&1 || true; frontend_port="$("%q" frontend-port .)" && pnpm --filter @remy/web-client start -- --port "$frontend_port"' "$BOOTSTRAP_SCRIPT"
+      ;;
+    chef)
+      command='if [[ -s "$HOME/.nvm/nvm.sh" ]]; then source "$HOME/.nvm/nvm.sh"; fi; nvm use --silent >/dev/null 2>&1 || true; cd apps/chef-service && pnpm start'
+      ;;
+    canvas)
+      printf -v command 'if [[ -s "$HOME/.nvm/nvm.sh" ]]; then source "$HOME/.nvm/nvm.sh"; fi; nvm use --silent >/dev/null 2>&1 || true; canvas_port="$("%q" canvas-port .)" && pnpm --filter @remy/canvas-sync-service dev:instance --instance DevAndrew --profile remy-dev --port "$canvas_port"' "$BOOTSTRAP_SCRIPT"
+      ;;
+    *)
+      die "Unknown window: $window_name"
+      ;;
+  esac
+
+  printf '%s\n' "$command"
+}
+
+configure_window() {
+  local session_name="$1"
+  local window_name="$2"
+
+  tmux set-window-option -t "=$session_name:$window_name" automatic-rename off >/dev/null 2>&1 || true
+  tmux set-window-option -t "=$session_name:$window_name" allow-rename off >/dev/null 2>&1 || true
+}
+
+configure_service_window() {
+  local session_name="$1"
+  local window_name="$2"
+
+  configure_window "$session_name" "$window_name"
+  tmux set-window-option -t "=$session_name:$window_name" remain-on-exit on >/dev/null 2>&1 || true
+}
+
+aws_session_valid() {
+  aws sts get-caller-identity --profile "$AWS_PROFILE" >/dev/null 2>&1
+}
+
+ensure_aws_session() {
+  require_cmd aws
+
+  if aws_session_valid; then
+    printf 'AWS SSO session is valid for profile %s.\n' "$AWS_PROFILE"
+    return 0
+  fi
+
+  printf 'Starting AWS SSO login for profile %s...\n' "$AWS_PROFILE"
+  aws sso login --profile "$AWS_PROFILE"
+
+  if ! aws_session_valid; then
+    die "AWS SSO login did not produce a valid session for profile $AWS_PROFILE."
+  fi
+
+  printf 'AWS SSO session is ready.\n'
+}
+
+vpn_connected() {
+  ifconfig | grep -E 'inet 10\.1\.' >/dev/null 2>&1
+}
+
+ensure_vpn_connection() {
+  require_cmd ifconfig
+
+  if vpn_connected; then
+    printf 'VPN appears connected.\n'
+    return 0
+  fi
+
+  printf 'VPN is not connected.\n'
+  printf 'Open the AWS VPN Client and connect your Remy profile.\n'
+  printf 'The repo docs describe this in apps/networking/README.md.\n'
+
+  while ! vpn_connected; do
+    printf '\nPress Enter after connecting the AWS VPN Client, or Ctrl-C to cancel.'
+    read -r _
+  done
+
+  printf 'VPN connection detected.\n'
+}
+
+ensure_cloud_access() {
+  printf 'Checking AWS authentication...\n'
+  ensure_aws_session
+  printf '\nChecking VPN connectivity...\n'
+  ensure_vpn_connection
+  printf '\nCloud access preflight complete.\n\n'
+}
+
+create_window() {
+  local session_name="$1"
+  local worktree_path="$2"
+  local window_name="$3"
+  local command=''
+
+  tmux new-window -d -t "=$session_name:" -n "$window_name" -c "$worktree_path"
+  configure_window "$session_name" "$window_name"
+  case "$window_name" in
+    web|chef|canvas) configure_service_window "$session_name" "$window_name" ;;
+  esac
+
+  command="$(window_startup_command "$window_name")"
+  tmux send-keys -t "=$session_name:$window_name" "$command" C-m
+}
+
+create_window_if_missing() {
+  local session_name="$1"
+  local worktree_path="$2"
+  local window_name="$3"
+
+  if window_exists "$session_name" "$window_name"; then
+    return 0
+  fi
+
+  create_window "$session_name" "$worktree_path" "$window_name"
+}
+
+restart_window() {
+  local session_name="$1"
+  local worktree_path="$2"
+  local window_name="$3"
+
+  if window_exists "$session_name" "$window_name"; then
+    tmux kill-window -t "=$session_name:$window_name" >/dev/null 2>&1 || true
+  fi
+
+  create_window "$session_name" "$worktree_path" "$window_name"
+}
+
+sync_session_windows() {
+  local session_name="$1"
+  local worktree_path="$2"
+
+  create_window_if_missing "$session_name" "$worktree_path" editor
+  create_window_if_missing "$session_name" "$worktree_path" llm
+  restart_window "$session_name" "$worktree_path" web
+  restart_window "$session_name" "$worktree_path" chef
+  restart_window "$session_name" "$worktree_path" canvas
+}
+
+launch_bootstrap_window() {
+  local session_name="$1"
+  local worktree_path="$2"
+  local command=''
+
+  command="$(bootstrap_window_command "$session_name" "$worktree_path")"
+
+  if window_exists "$session_name" bootstrap; then
+    tmux respawn-window -k -t "=$session_name:bootstrap" -c "$worktree_path" "$command"
+  else
+    tmux new-window -d -t "=$session_name:" -n bootstrap -c "$worktree_path" "$command"
+  fi
+
+  configure_window "$session_name" bootstrap
+  tmux set-window-option -t "=$session_name:bootstrap" remain-on-exit on >/dev/null 2>&1 || true
+}
+
+bootstrap_window_command() {
+  local session_name="$1"
+  local worktree_path="$2"
+  local command=''
+
+  printf -v command '%q %q %q %q' "$SELF_PATH" "bootstrap-window" "$session_name" "$worktree_path"
+  printf '%s\n' "$command"
+}
+
+ensure_tmux_session() {
+  local worktree_path="$1"
+  local session_name bootstrap_command
+
+  session_name="$(session_name_for_path "$worktree_path")"
+  if has_tmux_session "$session_name"; then
+    launch_bootstrap_window "$session_name" "$worktree_path"
+    printf '%s\n' "$session_name"
+    return 0
+  fi
+
+  bootstrap_command="$(bootstrap_window_command "$session_name" "$worktree_path")"
+  tmux new-session -d -s "$session_name" -n bootstrap -c "$worktree_path" "$bootstrap_command"
+  configure_window "$session_name" bootstrap
+  tmux set-window-option -t "=$session_name:bootstrap" remain-on-exit on >/dev/null
+
+  printf '%s\n' "$session_name"
+}
+
+pick_worktree() {
+  local selection='' path='' action='' arg=''
+  local picker=''
+
+  require_cmd fzf
+  [[ -x "$WORKTREE_SCRIPT" ]] || die "Missing worktree helper: $WORKTREE_SCRIPT"
+  picker="$(picker_cmd)"
+
+  selection="$(
+    "$WORKTREE_SCRIPT" rows '' | $picker \
+      --delimiter=$'\t' \
+      --with-nth=4 \
+      --prompt='🌲  ' \
+      --header='  type to filter, enter to switch, enter on create to make worktree' \
+      --disabled \
+      --bind="start:reload:$WORKTREE_SCRIPT rows \"\"" \
+      --bind="change:reload:$WORKTREE_SCRIPT rows {q}" \
+      --border-label=' remy worktrees ' \
+      --preview-window='right:55%' \
+      --preview="$WORKTREE_SCRIPT preview {5}"
+  )" || return 0
+
+  if ! path="$("$WORKTREE_SCRIPT" resolve "$selection")"; then
+    die "Failed to resolve worktree selection."
+  fi
+
+  [[ -n "$path" ]] || return 0
+  PICKED_WORKTREE_PATH="$(normalize_path "$path")"
+}
+
+pick_and_connect() {
+  local worktree_path='' session_name=''
+
+  require_cmd tmux
+  pick_worktree || return 0
+  worktree_path="$PICKED_WORKTREE_PATH"
+  [[ -n "$worktree_path" ]] || return 0
+
+  session_name="$(ensure_tmux_session "$worktree_path")"
+  attach_or_switch_session "$session_name"
+}
+
+prepare_worktree() {
+  local target_path="$1"
+  local normalized_path=''
+  local worktrees_root=''
+
+  [[ -n "$target_path" ]] || die "Usage: remy-session-launch prepare <worktree-path>"
+
+  normalized_path="$(normalize_path "$target_path")"
+  normalized_path="${normalized_path%/}"
+  worktrees_root="$(normalize_path "$REMY_TS_WORKTREES_ROOT")"
+  worktrees_root="${worktrees_root%/}"
+  if [[ "$normalized_path" != "$worktrees_root"/* ]]; then
+    die "Not a Remy worktree path: $normalized_path"
+  fi
+
+  printf '%s\n' "$normalized_path"
+}
+
+bootstrap_window() {
+  local session_name="$1"
+  local worktree_path="$2"
+  local status=0
+  local shell_path=''
+
+  [[ -n "$session_name" ]] || die "Usage: remy-session-launch bootstrap-window <session-name> <worktree-path>"
+  worktree_path="$(prepare_worktree "$worktree_path")"
+
+  printf 'Remy bootstrap\n'
+  printf 'Session: %s\n' "$session_name"
+  printf 'Path: %s\n\n' "$worktree_path"
+
+  if "$BOOTSTRAP_SCRIPT" "$worktree_path"; then
+    :
+  else
+    status=$?
+    printf '\nBootstrap failed with exit %s.\n' "$status"
+    printf 'This window will remain open for inspection.\n'
+    exit "$status"
+  fi
+
+  printf 'Session ready.\n'
+  printf 'Windows: bootstrap, editor, llm, web, chef, canvas\n'
+  tmux display-message -t "=$session_name" "Remy session ready" >/dev/null 2>&1 || true
+  tmux set-window-option -t "=$session_name:bootstrap" remain-on-exit off >/dev/null 2>&1 || true
+  shell_path="${SHELL:-/bin/zsh}"
+  printf '\nBootstrap complete. Opening shell in this window.\n'
+  exec "$shell_path" -i
+}
+
+main() {
+  case "${1:-pick-and-connect}" in
+    pick)
+      shift || true
+      pick_worktree
+      ;;
+    pick-and-connect)
+      shift || true
+      pick_and_connect
+      ;;
+    prepare)
+      shift || true
+      prepare_worktree "${1:-}"
+      ;;
+    bootstrap-window)
+      shift || true
+      bootstrap_window "${1:-}" "${2:-}"
+      ;;
+    *)
+      die "Usage: remy-session-launch [pick|pick-and-connect|prepare <worktree-path>|bootstrap-window <session-name> <worktree-path>]"
+      ;;
+  esac
+}
+
+main "$@"

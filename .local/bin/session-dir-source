@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+mode="${1:-default}"
+home_dir="${HOME:?HOME is required}"
+dev_dir="${home_dir}/dev"
+
+shorten_path() {
+  local pathname="$1"
+  printf '%s\n' "${pathname/#$home_dir/~}"
+}
+
+emit_entry() {
+  local pathname="$1"
+  [[ -d "$pathname" ]] || return 0
+
+  local label short_path
+  label="$(basename "$pathname")"
+  short_path="$(shorten_path "$pathname")"
+  printf '%s\t%s\t%s\n' "$label" "$short_path" "$pathname"
+}
+
+emit_default_entries() {
+  local entry=''
+
+  if [[ -d "$dev_dir" ]]; then
+    while IFS= read -r entry; do
+      [[ -n "$entry" ]] || continue
+      if [[ "$entry" == *-worktrees ]]; then
+        while IFS= read -r worktree_entry; do
+          [[ -n "$worktree_entry" ]] || continue
+          emit_entry "$worktree_entry"
+        done < <(find "$entry" -mindepth 1 -maxdepth 1 -type d | sort -f)
+        continue
+      fi
+
+      emit_entry "$entry"
+    done < <(find "$dev_dir" -mindepth 1 -maxdepth 1 -type d | sort -f)
+  fi
+
+  emit_entry "${home_dir}/dotfiles"
+  emit_entry "${home_dir}/.config"
+  emit_entry "${home_dir}/Desktop"
+}
+
+emit_home_entries() {
+  fd -H -d 2 -t d -E .Trash -E Library . "$home_dir" |
+    while IFS= read -r entry; do
+      [[ -n "$entry" ]] || continue
+      emit_entry "$entry"
+    done
+}
+
+case "$mode" in
+  default)
+    emit_default_entries
+    ;;
+  home)
+    emit_home_entries
+    ;;
+  *)
+    printf 'Unknown mode: %s\n' "$mode" >&2
+    exit 1
+    ;;
+esac

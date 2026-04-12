@@ -2,11 +2,6 @@
 
 blacklist = ["scratch"]
 
-[[wildcard]]
-pattern = "~/dev/remy-ts-worktrees/*"
-startup_command = "tmux rename-window editor && nvim"
-windows = ["web", "chef", "canvas"]
-
 [[window]]
 name = "editor"
 startup_script = "nvim"
@@ -14,6 +9,10 @@ startup_script = "nvim"
 [[window]]
 name = "web"
 startup_script = "pnpm --filter @remy/web-client start"
+
+[[window]]
+name = "llm"
+startup_script = "codex"
 
 [[window]]
 name = "chef"

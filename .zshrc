@@ -75,3 +75,7 @@ if [[ -f "$HOME/.zshrc.local" ]]; then
 fi
 
 if command -v wt >/dev/null 2>&1; then eval "$(command wt config shell init zsh)"; fi
+
+if command -v nvm >/dev/null 2>&1; then
+  nvm use default >/dev/null 2>&1 || true
+fi
