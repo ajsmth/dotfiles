@@ -1,0 +1,65 @@
+#!/usr/bin/env zsh
+
+setopt local_options no_shwordsplit
+set -euo pipefail
+
+fail() {
+  echo "$*" >&2
+  exit 1
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || fail "$1 is required but not installed"
+}
+
+find_codex_rollout() {
+  local thread_id="$1"
+  local sessions_dir="${HOME}/.codex/sessions"
+
+  [[ -n "$thread_id" ]] || fail "CODEX_THREAD_ID is not set"
+  [[ -d "$sessions_dir" ]] || fail "Codex sessions directory not found: $sessions_dir"
+
+  find "$sessions_dir" -type f -name "*${thread_id}*.jsonl" 2>/dev/null | sort | tail -n 1
+}
+
+extract_codex_last_message() {
+  local rollout="$1"
+
+  [[ -f "$rollout" ]] || fail "Codex rollout file not found: $rollout"
+
+  jq -s -r '
+    [.[]
+     | select(.type == "response_item"
+         and .payload.type == "message"
+         and .payload.role == "assistant")
+     | .payload.content[]
+     | select(.type == "output_text")
+     | .text
+    ] | last // empty
+  ' "$rollout"
+}
+
+main() {
+  require_cmd jq
+  require_cmd dif
+
+  local adapter=""
+  local rollout=""
+  local message=""
+  local stdin_name=""
+
+  if [[ -n "${CODEX_THREAD_ID:-}" ]]; then
+    adapter="codex"
+    rollout=$(find_codex_rollout "$CODEX_THREAD_ID")
+    [[ -n "$rollout" ]] || fail "No rollout file found for current Codex thread: $CODEX_THREAD_ID"
+    message=$(extract_codex_last_message "$rollout")
+    [[ -n "$message" ]] || fail "No assistant message found in: $rollout"
+    stdin_name="codex-${CODEX_THREAD_ID}.md"
+  else
+    fail "No supported LLM session detected. Currently supported: Codex via CODEX_THREAD_ID."
+  fi
+
+  printf '%s\n' "$message" | dif --stdin --stdin-name "$stdin_name"
+}
+
+main "$@"

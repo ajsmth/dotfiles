@@ -15,6 +15,7 @@ Cross-platform dotfiles setup for macOS and Linux using GNU Stow.
 - `scripts/install-terminfo.sh`: installs vendored `xterm-ghostty` terminfo locally or on a remote host
 - `scripts/install-fonts.sh`: installs fonts from `fonts/` into user font dirs
 - `scripts/setup.sh`: one-shot bootstrap + stow
+- Pi config files are stored in `.pi/agent/` and stowed into `~/.pi/agent/`, while Pi runtime state (for example `auth.json` and `sessions/`) stays local in `~/.pi/agent/`
 
 ## Quick start
 
@@ -73,6 +74,7 @@ Install targets:
 - `scripts/bootstrap.sh` supports `brew` on macOS and `apt`/`dnf`/`pacman` on Linux.
 - On macOS, bootstrap installs: `git`, `stow`, `tmux`, `neovim`, `pure`, `nvm`, `rbenv`, `lazygit`, `ripgrep`, `fd`, `fzf`, `zoxide`, `ghostty`.
 - `scripts/setup.sh` installs the vendored `xterm-ghostty` terminfo into `~/.terminfo`.
+- `scripts/setup.sh` pre-creates `~/.pi/agent/{extensions,themes}` so Stow can own the portable Pi config files while Pi runtime state stays local.
 - `bun` is installed via the official install script when missing.
 - `nvm` is installed from Homebrew when available; bootstrap falls back to `~/.nvm` git install if needed.
 - On Linux, Ghostty install is attempted via distro package manager (`pacman`/`apk`/`zypper`/`snap`) when available.

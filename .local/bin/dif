@@ -1,0 +1,32 @@
+#!/usr/bin/env zsh
+
+setopt local_options no_shwordsplit
+set -euo pipefail
+
+if ! command -v revdiff >/dev/null 2>&1; then
+  echo "revdiff not found in PATH" >&2
+  exit 1
+fi
+
+for arg in "$@"; do
+  case "$arg" in
+    -o|--output|--output=*)
+      echo "dif manages revdiff output automatically; do not pass --output" >&2
+      exit 2
+      ;;
+  esac
+done
+
+local tmp_out
+tmp_out=$(mktemp "${TMPDIR:-/tmp}/dif-revdiff-output-XXXXXX")
+trap 'rm -f "$tmp_out"' EXIT
+
+if revdiff --output "$tmp_out" "$@"; then
+  if [[ -s "$tmp_out" ]] && command -v pbcopy >/dev/null 2>&1; then
+    pbcopy < "$tmp_out"
+    echo "Copied revdiff annotations to clipboard."
+  fi
+  exit 0
+fi
+
+exit $?

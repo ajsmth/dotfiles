@@ -7,17 +7,9 @@ name = "editor"
 startup_script = "nvim"
 
 [[window]]
-name = "web"
-startup_script = "pnpm --filter @remy/web-client start"
-
-[[window]]
 name = "llm"
 startup_script = "codex"
 
 [[window]]
 name = "chef"
 startup_script = "cd apps/chef-service && pnpm start"
-
-[[window]]
-name = "canvas"
-startup_script = "canvas_port=\"$(~/.local/bin/remy-bootstrap canvas-port .)\" && pnpm --filter @remy/canvas-sync-service dev:instance --instance DevAndrew --profile remy-dev --port \"$canvas_port\""

@@ -4,10 +4,14 @@ set -euo pipefail
 DOTFILES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 "$DOTFILES_DIR/scripts/bootstrap.sh"
+
+mkdir -p "$HOME/.codex"
+mkdir -p "$HOME/.pi/agent/extensions"
+mkdir -p "$HOME/.pi/agent/themes"
+
 "$DOTFILES_DIR/scripts/dotfiles.sh" restow .
 
-# Stow can't fold dirs that already exist — link these manually
-mkdir -p "$HOME/.codex"
+# Codex keeps mutable state in ~/.codex, so only link the shared instruction file.
 ln -sf "$DOTFILES_DIR/.codex/AGENTS.md" "$HOME/.codex/AGENTS.md"
 
 "$DOTFILES_DIR/scripts/install-terminfo.sh"
