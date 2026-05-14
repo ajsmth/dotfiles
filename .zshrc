@@ -66,6 +66,47 @@ export PATH="$HOME/.local/bin:$PATH"
 export EDITOR="nvim"
 bindkey -v
 
+_tmux_smart_window_option_enabled() {
+  local value
+  value="$(tmux show-option -wqv automatic-rename 2>/dev/null)"
+  [[ "$value" == "on" || "$value" == "1" ]]
+}
+
+_tmux_smart_window_preexec() {
+  [[ -n "${TMUX:-}" ]] || return
+  command -v tmux >/dev/null 2>&1 || return
+  _tmux_smart_window_option_enabled || return
+
+  local label
+  label="$("$HOME/.local/bin/tmux-smart-window-name" --command "$1" "$PWD" 2>/dev/null)" || return
+  [[ -n "$label" ]] || return
+
+  tmux rename-window "$label" \; \
+    set-option -w automatic-rename off \; \
+    set-option -w @smart-window-name-active 1 >/dev/null 2>&1
+}
+
+_tmux_smart_window_precmd() {
+  [[ -n "${TMUX:-}" ]] || return
+  command -v tmux >/dev/null 2>&1 || return
+
+  local smart_active auto_enabled label
+  smart_active="$(tmux show-option -wqv @smart-window-name-active 2>/dev/null)"
+  auto_enabled="$(_tmux_smart_window_option_enabled && printf 1 || true)"
+  [[ "$smart_active" == "1" || "$auto_enabled" == "1" ]] || return
+
+  label="$("$HOME/.local/bin/tmux-smart-window-name" --command "" "$PWD" 2>/dev/null)" || return
+  [[ -n "$label" ]] || return
+
+  tmux rename-window "$label" \; \
+    set-option -w automatic-rename on \; \
+    set-option -wu @smart-window-name-active >/dev/null 2>&1
+}
+
+autoload -Uz add-zsh-hook
+add-zsh-hook preexec _tmux_smart_window_preexec
+add-zsh-hook precmd _tmux_smart_window_precmd
+
 
 # opencode
 export PATH=/Users/andrewsmith/.opencode/bin:$PATH

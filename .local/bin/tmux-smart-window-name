@@ -4,9 +4,20 @@ set -euo pipefail
 
 PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 
-pane_pid="${1:-}"
-pane_path="${2:-}"
-pane_command="${3:-}"
+mode="${1:-default}"
+
+case "$mode" in
+  --command)
+    pane_pid=''
+    pane_command="${2:-}"
+    pane_path="${3:-}"
+    ;;
+  *)
+    pane_pid="${1:-}"
+    pane_path="${2:-}"
+    pane_command="${3:-}"
+    ;;
+esac
 
 clean_name() {
   local name="$1"
@@ -88,12 +99,12 @@ llm_label() {
   return 1
 }
 
-dev_host_label() {
+dev_llm_label() {
   local args="$1"
   local previous='' token
 
   for token in $args; do
-    if [[ "$previous" == "host" && -n "$token" ]]; then
+    if [[ "$previous" == "llm" && -n "$token" ]]; then
       clean_name "$token"
       return 0
     fi
@@ -149,8 +160,8 @@ process_label() {
 
   llm_label "$args" && return 0
   case " $args " in
-    *"/.local/bin/dev host "*)
-      dev_host_label "$args" && return 0
+    *"/.local/bin/dev llm "*|*" dev llm "*)
+      dev_llm_label "$args" && return 0
       ;;
   esac
   package_label "$args" && return 0
@@ -175,7 +186,7 @@ process_label() {
         *) return 1 ;;
       esac
       ;;
-    zsh|bash|fish|sh|login)
+    zsh|bash|fish|sh|login|cd|source|.|exec|command|env|sudo|*=*)
       return 1
       ;;
     *)
@@ -239,4 +250,22 @@ main() {
   emit_label "$(path_label)"
 }
 
-main
+main_command() {
+  local label
+
+  if label="$(process_label "$pane_command")"; then
+    emit_label "$label"
+    return
+  fi
+
+  emit_label "$(path_label)"
+}
+
+case "$mode" in
+  --command)
+    main_command
+    ;;
+  *)
+    main
+    ;;
+esac

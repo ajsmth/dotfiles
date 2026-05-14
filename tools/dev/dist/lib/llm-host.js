@@ -389,6 +389,7 @@ class LlmHost {
     runningLocalCommand = false;
     scrollOffset = 0;
     screenActive = false;
+    lastRenderedRows = [];
     cols;
     rows;
     viewportRows;
@@ -413,7 +414,7 @@ class LlmHost {
     }
     async start() {
         if (!stdin.isTTY || !stdout.isTTY) {
-            throw new Error('dev host requires an interactive TTY.');
+            throw new Error('dev llm requires an interactive TTY.');
         }
         this.enterScreen();
         this.attachInput();
@@ -442,6 +443,7 @@ class LlmHost {
     enterScreen() {
         this.screenActive = true;
         stdout.write('\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1006h\x1b[2J');
+        this.lastRenderedRows = [];
     }
     exitScreen() {
         if (!this.screenActive) {
@@ -464,6 +466,8 @@ class LlmHost {
         this.viewportRows = this.childViewportRows();
         this.terminal.resize(this.cols, this.viewportRows);
         this.child.resize(this.cols, this.viewportRows);
+        this.lastRenderedRows = [];
+        stdout.write('\x1b[2J');
         this.queueRender();
     }
     queueRender() {
@@ -479,31 +483,58 @@ class LlmHost {
     render() {
         const buffer = this.terminal.buffer.active;
         const start = Math.max(0, buffer.baseY - this.scrollOffset);
+        const rows = [];
         for (let row = 0; row < this.viewportRows; row += 1) {
-            this.writeRow(row + 1, renderStyledLine(buffer.getLine(start + row), this.cols));
+            rows.push(this.formatRow(renderStyledLine(buffer.getLine(start + row), this.cols)));
         }
-        this.writeRow(this.viewportRows + 1, dim('─'.repeat(this.cols)));
-        this.writeRow(this.viewportRows + 2, this.commandBar());
+        rows.push(this.formatRow(dim('─'.repeat(this.cols))));
+        rows.push(this.formatRow(this.commandBar()));
+        let frame = '\x1b[?25l\x1b[?2026h';
+        for (let row = 0; row < rows.length; row += 1) {
+            if (rows[row] === this.lastRenderedRows[row]) {
+                continue;
+            }
+            frame += `\x1b[${row + 1};1H${rows[row]}`;
+        }
+        frame += this.cursorSequence();
+        frame += '\x1b[?2026l';
+        stdout.write(frame);
+        this.lastRenderedRows = rows;
     }
-    writeRow(row, content) {
+    formatRow(content) {
         const safeContent = visibleLength(content) > this.cols
             ? truncatePlain(stripAnsi(content), this.cols)
             : content;
-        stdout.write(`\x1b[${row};1H\x1b[2K${padRight(safeContent, this.cols)}`);
+        return padRight(safeContent, this.cols);
+    }
+    cursorSequence() {
+        if (this.mode === 'command') {
+            const column = Math.min(this.cols, visibleLength(`${blue('>')} `) + this.commandBuffer.length + 1);
+            return `\x1b[${this.viewportRows + 2};${column}H\x1b[?25h`;
+        }
+        if (this.mode === 'confirm' && this.confirmState) {
+            const suffix = this.confirmState.defaultValue ? '[Y/n]' : '[y/N]';
+            const prompt = `${cyan('?')} ${bold(this.confirmState.label)} ${dim(suffix)}`;
+            const column = Math.min(this.cols, visibleLength(prompt) + 1);
+            return `\x1b[${this.viewportRows + 2};${column}H\x1b[?25h`;
+        }
+        if (this.scrollOffset > 0) {
+            return '\x1b[?25l';
+        }
+        const buffer = this.terminal.buffer.active;
+        const row = Math.max(1, Math.min(this.viewportRows, buffer.cursorY + 1));
+        const column = Math.max(1, Math.min(this.cols, buffer.cursorX + 1));
+        return `\x1b[${row};${column}H\x1b[?25h`;
     }
     commandBar() {
         if (this.mode === 'command') {
-            const prompt = `${blue('dev')} ${dim('>')} `;
-            const suggestion = commandSuggestion(this.commandBuffer);
-            return `${prompt}${this.commandBuffer}${dim(suggestion)}`;
+            return `${blue('>')} ${this.commandBuffer}`;
         }
         if (this.mode === 'confirm' && this.confirmState) {
             const suffix = this.confirmState.defaultValue ? '[Y/n]' : '[y/N]';
             return `${cyan('?')} ${bold(this.confirmState.label)} ${dim(suffix)}`;
         }
-        const scrollStatus = this.scrollOffset > 0 ? yellow(`scroll -${this.scrollOffset}`) : dim('bottom');
-        const hint = `${blue('dev host')} ${dim(': for commands')}`;
-        return `${hint} ${scrollStatus} ${dim(this.status)}`;
+        return blue('>');
     }
     onInput(chunk) {
         const data = chunk.toString('utf8');
