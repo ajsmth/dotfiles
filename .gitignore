@@ -6,3 +6,5 @@ nvim.log
 .local/*
 !.local/bin/
 !.local/bin/**
+.local/bin/dev
+tools/dev/node_modules/

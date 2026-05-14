@@ -1,2 +1,6 @@
 [Application Options]
 theme = nordfox
+line-numbers = true
+relative-line-numbers = true
+wrap = true
+show-untracked = true

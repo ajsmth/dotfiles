@@ -109,12 +109,14 @@ create_or_replace_user_command('W', 'w', {})
 
 -- Show diagnostic under cursor (VSCode-style hover)
 vim.keymap.set('n', '<leader>e', function()
-  vim.diagnostic.open_float(nil, {
+  vim.diagnostic.open_float(0, {
+    scope = 'line',
     border = 'rounded',
-    source = 'if_many',
+    source = true,
     focusable = false,
+    close_events = { 'CursorMoved', 'CursorMovedI', 'BufHidden', 'InsertCharPre', 'WinLeave' },
   })
-end, { desc = 'Show diagnostic under cursor' })
+end, { desc = 'Show diagnostics for current line' })
 
 -- Jump to next diagnostic (and show float)
 vim.keymap.set('n', ']d', function()
@@ -368,6 +370,8 @@ require('lazy').setup({
       -- Document existing key chains
       spec = {
         { '<leader>c', group = '[C]ode', mode = { 'n', 'x' } },
+        { '<leader>g', group = '[G]it' },
+        { '<leader>h', group = '[H]unk' },
         { '<leader>r', group = '[R]ename' },
         { '<leader>s', group = '[S]earch' },
         { '<leader>t', group = '[T]erminal' },

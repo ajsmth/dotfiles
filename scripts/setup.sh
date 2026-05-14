@@ -11,8 +11,9 @@ mkdir -p "$HOME/.pi/agent/themes"
 
 "$DOTFILES_DIR/scripts/dotfiles.sh" restow .
 
-# Codex keeps mutable state in ~/.codex, so only link the shared instruction file.
+# Codex and pi both keep mutable state in their home directories, so only link the shared instruction file.
 ln -sf "$DOTFILES_DIR/.codex/AGENTS.md" "$HOME/.codex/AGENTS.md"
+ln -sf "$DOTFILES_DIR/.codex/AGENTS.md" "$HOME/.pi/agent/AGENTS.md"
 
 "$DOTFILES_DIR/scripts/install-terminfo.sh"
 "$DOTFILES_DIR/scripts/install-fonts.sh"

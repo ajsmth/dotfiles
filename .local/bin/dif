@@ -8,6 +8,39 @@ if ! command -v revdiff >/dev/null 2>&1; then
   exit 1
 fi
 
+format_clipboard_output() {
+  local output_file="$1"
+
+  case "${DIF_CLIPBOARD_MODE:-}" in
+    assistant-review)
+      print -- "Review these comments about your last response. Answer questions directly and discuss changes first. Run /review update later to regenerate a revised version:"
+      print
+      print -- "<review>"
+      cat "$output_file"
+      print -- "</review>"
+      ;;
+    plan-review)
+      print -- "Please update the current plan using these review comments:"
+      print
+      print -- "<review>"
+      cat "$output_file"
+      print -- "</review>"
+      ;;
+    pr-feedback)
+      print -- "Determine if these changes are still valid and make the required updates."
+      print -- "Only act on feedback that is still relevant to the current code. Ignore comments that are obsolete, already addressed, or contradicted by the current implementation."
+      print -- "After making updates, summarize what changed and which feedback was skipped as no longer valid."
+      print
+      print -- "<pr_feedback>"
+      cat "$output_file"
+      print -- "</pr_feedback>"
+      ;;
+    *)
+      cat "$output_file"
+      ;;
+  esac
+}
+
 for arg in "$@"; do
   case "$arg" in
     -o|--output|--output=*)
@@ -17,13 +50,15 @@ for arg in "$@"; do
   esac
 done
 
-local tmp_out
+local tmp_out tmp_clip
 tmp_out=$(mktemp "${TMPDIR:-/tmp}/dif-revdiff-output-XXXXXX")
-trap 'rm -f "$tmp_out"' EXIT
+tmp_clip=$(mktemp "${TMPDIR:-/tmp}/dif-revdiff-clipboard-XXXXXX")
+trap 'rm -f "$tmp_out" "$tmp_clip"' EXIT
 
 if revdiff --output "$tmp_out" "$@"; then
   if [[ -s "$tmp_out" ]] && command -v pbcopy >/dev/null 2>&1; then
-    pbcopy < "$tmp_out"
+    format_clipboard_output "$tmp_out" > "$tmp_clip"
+    pbcopy < "$tmp_clip"
     echo "Copied revdiff annotations to clipboard."
   fi
   exit 0

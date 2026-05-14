@@ -1,0 +1,242 @@
+#!/bin/bash
+
+set -euo pipefail
+
+PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+
+pane_pid="${1:-}"
+pane_path="${2:-}"
+pane_command="${3:-}"
+
+clean_name() {
+  local name="$1"
+  name="${name##*/}"
+  name="${name#-}"
+  printf '%s\n' "$name"
+}
+
+path_label() {
+  local path="${pane_path%/}"
+
+  if [[ -z "$path" ]]; then
+    printf '%s\n' "${pane_command:-tmux}"
+    return
+  fi
+
+  if [[ "$path" == "${HOME:-}" ]]; then
+    printf '~\n'
+    return
+  fi
+
+  printf '%s\n' "${path##*/}"
+}
+
+short_package_name() {
+  local package="$1"
+  package="${package##*/}"
+  package="${package#@}"
+  printf '%s\n' "$package"
+}
+
+process_args() {
+  ps -p "$1" -o args= 2>/dev/null | awk '{$1=$1; print}'
+}
+
+process_stat() {
+  ps -p "$1" -o stat= 2>/dev/null | awk '{$1=$1; print}'
+}
+
+collect_descendants() {
+  local queue=("$1")
+  local descendants=()
+  local pid child
+
+  while ((${#queue[@]} > 0)); do
+    pid="${queue[0]}"
+    queue=("${queue[@]:1}")
+
+    while IFS= read -r child; do
+      [[ "$child" =~ ^[0-9]+$ ]] || continue
+      descendants+=("$child")
+      queue+=("$child")
+    done < <(pgrep -P "$pid" 2>/dev/null || true)
+  done
+
+  if ((${#descendants[@]} > 0)); then
+    printf '%s\n' "${descendants[@]}"
+  fi
+}
+
+llm_label() {
+  local args="$1"
+
+  case " $args " in
+    *"@openai/codex"*|*"/bin/codex "*|*"/bin/codex"|*"/codex/codex"*|*" codex "*)
+      printf 'codex\n'
+      return 0
+      ;;
+    *"/bin/claude "*|*"/bin/claude"|*" claude "*)
+      printf 'claude\n'
+      return 0
+      ;;
+    *"/bin/gemini "*|*"/bin/gemini"|*" gemini "*)
+      printf 'gemini\n'
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+dev_host_label() {
+  local args="$1"
+  local previous='' token
+
+  for token in $args; do
+    if [[ "$previous" == "host" && -n "$token" ]]; then
+      clean_name "$token"
+      return 0
+    fi
+    previous="$token"
+  done
+
+  return 1
+}
+
+package_label() {
+  local args="$1"
+  local token previous='' package='' script=''
+
+  case " $args " in
+    *"/pnpm "*|*" pnpm "*|*"/npm "*|*" npm "*|*"/yarn "*|*" yarn "*|*"/bun "*|*" bun "*)
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  for token in $args; do
+    if [[ "$previous" == "--filter" ]]; then
+      package="$(short_package_name "$token")"
+    fi
+
+    case "$token" in
+      --filter=*)
+        package="$(short_package_name "${token#--filter=}")"
+        ;;
+      dev|dev:*|start|start:*|watch|watch:*|test|test:*|build|build:*)
+        [[ -z "$script" ]] && script="$token"
+        ;;
+    esac
+
+    previous="$token"
+  done
+
+  [[ -n "$package" ]] || package="$(path_label)"
+
+  if [[ -n "$script" ]]; then
+    printf '%s:%s\n' "$package" "$script"
+  else
+    printf '%s\n' "$package"
+  fi
+}
+
+process_label() {
+  local args="$1"
+  local first command
+
+  [[ -n "$args" ]] || return 1
+
+  llm_label "$args" && return 0
+  case " $args " in
+    *"/.local/bin/dev host "*)
+      dev_host_label "$args" && return 0
+      ;;
+  esac
+  package_label "$args" && return 0
+
+  first="${args%% *}"
+  command="$(clean_name "$first")"
+
+  case "$command" in
+    nvim|vim)
+      printf 'nvim\n'
+      ;;
+    node)
+      case "$args" in
+        *vite*) printf 'vite\n' ;;
+        *wrangler*) printf 'wrangler\n' ;;
+        *tsx*) printf 'tsx\n' ;;
+        *ts-node*) printf 'ts-node\n' ;;
+        *vitest*) printf 'vitest\n' ;;
+        *eslint*) printf 'eslint\n' ;;
+        *prettier*) printf 'prettier\n' ;;
+        *next*) printf 'next\n' ;;
+        *) return 1 ;;
+      esac
+      ;;
+    zsh|bash|fish|sh|login)
+      return 1
+      ;;
+    *)
+      printf '%s\n' "$command"
+      ;;
+  esac
+}
+
+emit_label() {
+  local label="$1"
+  label="${label//$'\t'/ }"
+  label="${label//$'\r'/ }"
+  label="${label//$'\n'/ }"
+  printf '%.40s\n' "$label"
+}
+
+main() {
+  local pids=()
+  local pid args stat label
+
+  if [[ "$pane_pid" =~ ^[0-9]+$ ]]; then
+    while IFS= read -r pid; do
+      [[ -n "$pid" ]] || continue
+      pids+=("$pid")
+    done < <(collect_descendants "$pane_pid")
+  fi
+
+  if ((${#pids[@]} > 0)); then
+    for pid in "${pids[@]}"; do
+      args="$(process_args "$pid")"
+      if label="$(llm_label "$args")"; then
+        emit_label "$label"
+        return
+      fi
+    done
+
+    for pid in "${pids[@]}"; do
+      stat="$(process_stat "$pid")"
+      [[ "$stat" == *+* ]] || continue
+      args="$(process_args "$pid")"
+      if label="$(process_label "$args")"; then
+        emit_label "$label"
+        return
+      fi
+    done
+
+    for pid in "${pids[@]}"; do
+      args="$(process_args "$pid")"
+      if label="$(process_label "$args")"; then
+        emit_label "$label"
+        return
+      fi
+    done
+  fi
+
+  if [[ -n "$pane_command" && "$pane_command" != "node" && "$pane_command" != *=* ]]; then
+    emit_label "$pane_command"
+    return
+  fi
+
+  emit_label "$(path_label)"
+}
+
+main

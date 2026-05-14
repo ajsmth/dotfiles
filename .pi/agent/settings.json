@@ -1,5 +1,8 @@
 {
-  "lastChangelogVersion": "0.66.1",
+  "lastChangelogVersion": "0.71.1",
   "quietStartup": true,
-  "theme": "nordfox"
+  "theme": "nordfox",
+  "defaultProvider": "openai",
+  "defaultModel": "gpt-5.5",
+  "defaultThinkingLevel": "medium"
 }

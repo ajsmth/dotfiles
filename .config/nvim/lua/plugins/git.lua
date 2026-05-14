@@ -1,36 +1,23 @@
 return {
-  'NeogitOrg/neogit',
-  lazy = true,
-  dependencies = {
-    'nvim-lua/plenary.nvim', -- required
-
-    -- Only one of these is needed.
-    {
-      'sindrets/diffview.nvim',
-      opts = {
-        use_icons = false,
-      },
-    }, -- optional
-
-    -- Only one of these is needed.
-    'nvim-telescope/telescope.nvim', -- optional
+  'sindrets/diffview.nvim',
+  cmd = {
+    'DiffviewOpen',
+    'DiffviewFileHistory',
+    'DiffviewClose',
+    'DiffviewFocusFiles',
+    'DiffviewToggleFiles',
+    'DiffviewRefresh',
   },
-  cmd = 'Neogit',
+  dependencies = {
+    'nvim-lua/plenary.nvim',
+  },
   opts = {
-    kind = 'replace',
-    mappings = {
-      status = {
-        ['<c-p>'] = false,
-      },
-    },
+    use_icons = false,
   },
   keys = {
-    { '<leader>gg', '<cmd>Neogit<cr>', desc = 'Show Neogit UI' },
+    { '<leader>gd', '<cmd>DiffviewOpen<cr>', desc = 'Open Diffview' },
+    { '<leader>gD', '<cmd>DiffviewFileHistory %<cr>', desc = 'File history' },
+    { '<leader>gH', '<cmd>DiffviewFileHistory<cr>', desc = 'Repo history' },
     { '<leader>gq', '<cmd>DiffviewClose<cr>', desc = 'Close Diffview' },
-    { '<S-l>', '<cmd>tabnext<cr>', desc = 'Next tab' },
-    { '<S-h>', '<cmd>tabprevious<cr>', desc = 'Previous tab' },
-    { '<leader>tn', '<cmd>tabnext<cr>', desc = 'Next tab' },
-    { '<leader>tp', '<cmd>tabprevious<cr>', desc = 'Previous tab' },
-    { '<leader>tq', '<cmd>tabclose<cr>', desc = 'Close tab' },
   },
 }
