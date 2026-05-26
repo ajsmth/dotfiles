@@ -1,11 +1,18 @@
+import { confirm as confirmPrompt, select as selectPrompt } from '@inquirer/prompts';
 import chalk from 'chalk';
 import ora from 'ora';
-import readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 
 interface PrintCliErrorOptions {
   debug?: boolean;
 }
+
+type SelectChoice<Value> = {
+  value: Value;
+  name?: string;
+  description?: string;
+  disabled?: boolean | string;
+};
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message) {
@@ -40,29 +47,26 @@ export async function promptYesNo(label: string, defaultValue = false): Promise<
     return defaultValue;
   }
 
-  const rl = readline.createInterface({ input, output });
-  const suffix = defaultValue ? ' [Y/n]: ' : ' [y/N]: ';
+  return confirmPrompt({
+    message: label,
+    default: defaultValue,
+  }, { input, output });
+}
 
-  try {
-    while (true) {
-      const answer = (await rl.question(chalk.cyan(`${label}${suffix}`))).trim().toLowerCase();
-      if (answer === '') {
-        return defaultValue;
-      }
-
-      if (['y', 'yes'].includes(answer)) {
-        return true;
-      }
-
-      if (['n', 'no'].includes(answer)) {
-        return false;
-      }
-
-      console.log(chalk.yellow('Please answer yes or no.'));
-    }
-  } finally {
-    rl.close();
+export async function promptSelect<const Value>(
+  label: string,
+  choices: readonly SelectChoice<Value>[],
+  defaultValue: Value,
+): Promise<Value> {
+  if (!input.isTTY) {
+    return defaultValue;
   }
+
+  return selectPrompt({
+    message: label,
+    choices,
+    default: defaultValue,
+  }, { input, output });
 }
 
 export function printCliError(error: unknown, options: PrintCliErrorOptions = {}): void {

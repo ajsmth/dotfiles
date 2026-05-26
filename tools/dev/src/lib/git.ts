@@ -674,6 +674,15 @@ function conflictedFiles(repoRoot: string): string[] {
     .filter(Boolean);
 }
 
+function conflictStageContent(repoRoot: string, stage: 1 | 2 | 3, file: string): string {
+  const result = git(['show', `:${stage}:${file}`], repoRoot, true);
+  if (result.status !== 0) {
+    return '[unavailable]';
+  }
+
+  return result.stdout;
+}
+
 async function isRebaseInProgress(repoRoot: string): Promise<boolean> {
   const mergePath = gitOutput(['rev-parse', '--git-path', 'rebase-merge'], repoRoot);
   const applyPath = gitOutput(['rev-parse', '--git-path', 'rebase-apply'], repoRoot);
@@ -695,17 +704,34 @@ async function resolveConflictFile(
     fail(`Conflict file is too large for automatic LLM resolution: ${file} (${byteLength} bytes).`);
   }
 
+  const baseContent = conflictStageContent(repoRoot, 1, file);
+  const targetSideContent = conflictStageContent(repoRoot, 2, file);
+  const replayedSideContent = conflictStageContent(repoRoot, 3, file);
   const systemPrompt = [
     'You resolve git rebase conflicts.',
     'Return the complete resolved file content only.',
     'Do not include markdown fences, commentary, explanations, or conflict markers.',
     'Preserve the file style and intent from both sides when possible.',
+    'Treat target-branch removals as intentional unless the branch-side change clearly still requires the removed code.',
+    'Do not introduce unrelated edits. Non-conflicted regions must remain byte-for-byte equivalent to the input outside conflict marker removal.',
+    'Before returning, compare the resolution against the base, current branch side, and target branch side, and ensure every retained or restored hunk is directly explained by the conflict.',
   ].join('\n');
   const userPrompt = [
     `Repository: ${path.basename(repoRoot)}`,
     `File: ${file}`,
     `Current branch: ${context.branch}`,
     `Rebase target: ${context.target}`,
+    '',
+    'Conflict stage contents for double-checking:',
+    '',
+    'Stage 1: merge base',
+    baseContent,
+    '',
+    'Stage 2: current index side, usually the rebase target side',
+    targetSideContent,
+    '',
+    'Stage 3: replayed branch commit side',
+    replayedSideContent,
     '',
     'Resolve this conflicted file:',
     content,
