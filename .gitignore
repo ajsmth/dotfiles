@@ -8,3 +8,7 @@ nvim.log
 !.local/bin/**
 .local/bin/dev
 tools/dev/node_modules/
+
+# Build output directories
+**/dist/
+**/build/
