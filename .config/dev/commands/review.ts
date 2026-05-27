@@ -391,7 +391,7 @@ function reviewPrompt(context: ReviewContext): string {
     'Changed files:',
     context.changedFiles,
     '',
-    'Run the selected pre-submit reviews before CI is triggered. Run independent reviews/checks in parallel whenever practical, then consolidate the findings.',
+    'Run the selected pre-submit reviews before CI is triggered. Run independent reviews/checks in parallel whenever practical, then consolidate the findings before changing code unless a fix is clearly safe and narrowly scoped.',
     '',
     'Selected reviews:',
     ...context.selectedReviews.map((review) => `- ${review.title}: ${review.instruction}`),
@@ -399,10 +399,15 @@ function reviewPrompt(context: ReviewContext): string {
     'Review rules:',
     '- Focus on actionable bugs, regressions, security issues, missing tests, and likely CI failures.',
     '- Treat formatter-only, stylistic, stale, duplicate, or speculative findings as non-blocking noise unless they create a real risk.',
-    '- Do not commit, push, open a PR, or update Linear from this handoff.',
-    '- If a selected review finds an issue that can be fixed safely, make the focused code change and run the narrowest relevant verification.',
+    '- Review tools may create reports, logs, SARIF, markdown summaries, or other generated artifacts for analysis. Use them as temporary inputs, but do not commit them unless the user explicitly asks.',
+    '- Before finishing, inspect git status and remove generated review artifacts or add an appropriate ignore only when the artifact path is expected to recur and belongs outside version control.',
+    '- You may make clearly safe, narrowly scoped fixes without asking first, such as typo-level corrections, obvious test expectation updates, simple missing validation, or mechanical cleanup that directly addresses a concrete finding.',
+    '- Do not make ambiguous, architectural, product-facing, public API, migration, logging/telemetry, broad refactor, or behavior-changing fixes without explicit approval.',
+    '- For anything worthwhile but not clearly safe, stop before editing and present a concise proposed-changes list. Include the issue, affected file or area, why it matters, and the intended fix.',
+    '- Keep the approval prompt succinct. Group related findings into one proposed change instead of asking about every low-level comment separately.',
+    '- Do not commit, push, open a PR, or update Linear from this handoff unless the user explicitly asks.',
     '- If the requested review type is unavailable in this repo or tool session, say that explicitly and continue with the remaining selected reviews.',
-    '- Finish with a concise consolidated report grouped by review type, including verification commands and any unresolved risks.',
+    '- Finish with a concise consolidated report grouped by review type, safe fixes applied, proposed changes that need approval, verification commands already run, generated artifacts cleaned or ignored, and any unresolved risks.',
   ].join('\n');
 }
 

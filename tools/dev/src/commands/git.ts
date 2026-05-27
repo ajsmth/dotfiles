@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 
 import { rebaseOntoOrigin, submitChanges, summarizeComments } from '../lib/git.js';
+import { reviewLocalChanges } from '../lib/review.js';
 import type { LlmBackend } from '../lib/llm.js';
 
 type SquashMode = 'ask' | 'always' | 'never';
@@ -33,8 +34,16 @@ interface SubmitCommandOptions {
 interface CommentsCommandOptions {
   raw: boolean;
   agent: boolean;
+  resolveOutdated: boolean;
   backend?: LlmBackend;
   model?: string;
+}
+
+interface ReviewCommandOptions {
+  remote: string;
+  baseBranch?: string;
+  fetch: boolean;
+  agent: boolean;
 }
 
 function parseSquashMode(value: string): SquashMode {
@@ -115,13 +124,31 @@ gitCommand
   .description('Fetch current PR comments and summarize actionable feedback')
   .option('--raw', 'Print fetched comment payload without LLM summarization')
   .option('--agent', 'Run non-interactively and emit JSON output')
+  .option('--resolve-outdated', 'Automatically resolve outdated comments that are no longer relevant')
   .option('--backend <backend>', 'LLM backend: openai or ollama', parseBackend)
   .option('--model <model>', 'LLM model override')
   .action(async (options: CommentsCommandOptions) => {
     await summarizeComments({
       raw: options.raw,
       agent: options.agent,
+      resolveOutdated: options.resolveOutdated,
       backend: options.backend,
       model: options.model,
+    });
+  });
+
+gitCommand
+  .command('review')
+  .description('Run local code review using Codex and CodeRabbit before pushing to CI')
+  .option('--remote <name>', 'Remote to fetch and inspect for the default branch', 'origin')
+  .option('--base-branch <branch>', 'Base branch to compare against')
+  .option('--no-fetch', 'Skip git fetch before reviewing')
+  .option('--agent', 'Run non-interactively and emit JSON output')
+  .action(async (options: ReviewCommandOptions) => {
+    await reviewLocalChanges({
+      remote: options.remote,
+      baseBranch: options.baseBranch,
+      fetch: options.fetch,
+      agent: options.agent,
     });
   });

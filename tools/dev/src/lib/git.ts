@@ -35,6 +35,7 @@ interface CommentsOptions {
   model?: string;
   raw: boolean;
   agent: boolean;
+  resolveOutdated?: boolean;
 }
 
 interface GitContext {
@@ -853,9 +854,7 @@ export async function submitChanges(options: SubmitOptions): Promise<void> {
       return;
     }
 
-    const shouldStageAll = options.agent
-      ? options.yes
-      : await promptYesNo('Stage all unstaged and untracked changes?', true);
+    const shouldStageAll = options.agent ? options.yes : true;
     if (shouldStageAll) {
       await maybeStep(options.agent, 'Staging local changes', async () => {
         git(['add', '-A'], repoRoot);
@@ -979,6 +978,68 @@ export async function submitChanges(options: SubmitOptions): Promise<void> {
   printKeyValue('PR', pr.url);
 }
 
+async function resolveOutdatedComments(
+  repoRoot: string,
+  repo: RepoInfo,
+  pr: PullRequestInfo,
+  reviewComments: unknown[],
+  options: Pick<CommentsOptions, 'backend' | 'model'>,
+): Promise<number> {
+  const outdatedComments = reviewComments.filter((comment: any) => {
+    return comment?.outdated === true && comment?.id && !comment?.resolved;
+  });
+
+  if (outdatedComments.length === 0) {
+    return 0;
+  }
+
+  const encodedRepo = `${repo.owner}/${repo.name}`;
+  let resolvedCount = 0;
+
+  for (const comment of outdatedComments) {
+    const commentData = comment as { id: number; body?: string; path?: string; line?: number };
+
+    // Ask LLM if this outdated comment is still relevant
+    const systemPrompt = [
+      'You determine if an outdated GitHub PR comment is still relevant.',
+      'An outdated comment means the code it referenced was changed after the comment was made.',
+      'Return valid JSON with: { "stillRelevant": boolean, "reason": string }',
+      'Mark as stillRelevant: true only if the feedback applies to code that still exists or a concern that persists.',
+      'Mark as stillRelevant: false if the code was removed, refactored away, or the concern was addressed.',
+    ].join('\n');
+
+    const userPrompt = [
+      `Comment on ${commentData.path}:${commentData.line || 'unknown'}`,
+      `Body: ${commentData.body || 'n/a'}`,
+      '',
+      'This comment is marked outdated by GitHub (the code it referenced changed).',
+      'Should this comment remain open or be resolved?',
+    ].join('\n');
+
+    try {
+      const raw = await chat(systemPrompt, userPrompt, options);
+      const parsed = JSON.parse(stripMarkdownFence(raw)) as { stillRelevant?: boolean };
+
+      if (parsed.stillRelevant === false) {
+        // Resolve the comment via GitHub API
+        gh([
+          'api',
+          '-X', 'PATCH',
+          `repos/${encodedRepo}/pulls/comments/${commentData.id}`,
+          '-f', 'body=Automatically resolved as no longer relevant (code changed)',
+        ], repoRoot, true);
+
+        resolvedCount++;
+      }
+    } catch {
+      // If LLM fails or parsing fails, skip this comment (err on side of caution)
+      continue;
+    }
+  }
+
+  return resolvedCount;
+}
+
 export async function summarizeComments(options: CommentsOptions): Promise<void> {
   const repoRoot = gitOutput(['rev-parse', '--show-toplevel']);
   const branch = currentBranch(repoRoot);
@@ -999,6 +1060,21 @@ export async function summarizeComments(options: CommentsOptions): Promise<void>
     ghApiArray(repoRoot, reviewCommentsEndpoint));
   const reviews = await maybeStep(options.agent, 'Fetching reviews', async () =>
     ghApiArray(repoRoot, reviewsEndpoint));
+
+  // Optionally resolve outdated comments
+  if (options.resolveOutdated) {
+    const resolvedCount = await maybeStep(options.agent, 'Resolving outdated comments', async () =>
+      resolveOutdatedComments(repoRoot, repo, pr, reviewComments, options));
+
+    if (resolvedCount > 0 && !options.agent) {
+      console.log(`\nResolved ${resolvedCount} outdated ${pluralize(resolvedCount, 'comment')} as no longer relevant.`);
+    }
+
+    // Re-fetch comments after resolving
+    const updatedReviewComments = await maybeStep(options.agent, 'Re-fetching review comments', async () =>
+      ghApiArray(repoRoot, reviewCommentsEndpoint));
+    reviewComments.splice(0, reviewComments.length, ...updatedReviewComments);
+  }
 
   const changedFiles = gh(['pr', 'diff', '--name-only'], repoRoot, true).stdout.trim();
   const commitSubjects = gh(['pr', 'view', '--json', 'commits', '--jq', '.commits[].messageHeadline'], repoRoot, true)
